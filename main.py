@@ -1,6 +1,7 @@
 import os
 import random
 import re
+import time
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -16,12 +17,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Environment variables
-TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-WISHLINK_ID = os.getenv("WISHLINK_ID", "1752163729058-1dccdb9e-a0f9-f088-a678-e14f8997f719")
+# ============================================================
+# 🔧 Environment Variables
+# ============================================================
+TOKEN              = os.getenv("BOT_TOKEN")
+WEBHOOK_URL        = os.getenv("WEBHOOK_URL")
+WISHLINK_ID        = os.getenv("WISHLINK_ID", "1752163729058-1dccdb9e-a0f9-f088-a678-e14f8997f719")
+WISHLINK_CREATOR   = os.getenv("WISHLINK_CREATOR", "budget.looks")
+FIREBASE_API_KEY   = os.getenv("FIREBASE_API_KEY")           # AIzaSyDLL6Yr...
+WISHLINK_REFRESH_TOKEN = os.getenv("WISHLINK_REFRESH_TOKEN") # AMf-vBxr4oai...
 
-# Random titles
+# Random titles for Telegram bot responses
 TITLES = [
     "🔥 Loot Deal Alert!", "💥 Hot Deal Incoming!", "⚡ Limited Time Offer!",
     "🎯 Grab Fast!", "🚨 Flash Sale!", "💎 Special Deal Just For You!",
@@ -32,6 +38,111 @@ TITLES = [
 telegram_app = None
 event_loop = None
 
+# ============================================================
+# 🔑 Firebase Token Cache + Auto Refresh
+# ============================================================
+_token_cache = {
+    "id_token": None,
+    "expires_at": 0   # Unix timestamp
+}
+
+def get_fresh_wishlink_token():
+    """
+    Firebase refreshToken se fresh idToken lo.
+    Token memory mein cache hota hai — sirf expire hone pe refresh hoga.
+    """
+    global _token_cache
+
+    current_time = time.time()
+
+    # Cache check — 5 min buffer ke saath
+    if _token_cache["id_token"] and _token_cache["expires_at"] > current_time + 300:
+        logger.info("✅ Cached token valid hai — reuse kar raha hoon")
+        return _token_cache["id_token"]
+
+    logger.info("🔄 Token refresh kar raha hoon...")
+
+    if not FIREBASE_API_KEY or not WISHLINK_REFRESH_TOKEN:
+        logger.error("❌ FIREBASE_API_KEY ya WISHLINK_REFRESH_TOKEN env variable missing!")
+        return None
+
+    try:
+        resp = requests.post(
+            f"https://securetoken.googleapis.com/v1/token?key={FIREBASE_API_KEY}",
+            json={
+                "grant_type": "refresh_token",
+                "refresh_token": WISHLINK_REFRESH_TOKEN
+            },
+            timeout=15
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        new_token  = data.get("id_token")
+        expires_in = int(data.get("expires_in", 3600))
+
+        _token_cache["id_token"]    = new_token
+        _token_cache["expires_at"]  = current_time + expires_in
+
+        logger.info(f"✅ Token refresh successful! {expires_in}s valid")
+        return new_token
+
+    except Exception as e:
+        logger.error(f"❌ Token refresh failed: {e}")
+        return None
+
+
+# ============================================================
+# 💰 Affiliate Link Conversion
+# ============================================================
+def convert_to_affiliate_link(product_url):
+    """
+    Kisi bhi raw product URL (Flipkart/Amazon etc.) ko
+    budget.looks ke Wishlink affiliate link mein convert karo.
+    """
+    try:
+        token = get_fresh_wishlink_token()
+        if not token:
+            logger.warning("⚠️ Token nahi mila — raw URL return karunga")
+            return product_url
+
+        headers = {
+            "Authorization": f"Token {token}",
+            "Content-Type": "application/json",
+            "Origin": "https://creator.wishlink.com",
+            "Referer": "https://creator.wishlink.com/"
+        }
+
+        resp = requests.post(
+            "https://api.wishlink.com/api/c/convertSingleProductLink",
+            headers=headers,
+            json={"link": product_url, "creator": WISHLINK_CREATOR},
+            timeout=15
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        affiliate_link = (
+            data.get("wishlink") or
+            data.get("data", {}).get("wishlink") or
+            data.get("url")
+        )
+
+        if affiliate_link:
+            logger.info(f"✅ Affiliate link: {affiliate_link}")
+            return affiliate_link
+        else:
+            logger.warning(f"⚠️ Affiliate link response mein nahi mila: {data}")
+            return product_url
+
+    except Exception as e:
+        logger.error(f"❌ Affiliate conversion failed: {e}")
+        return product_url
+
+
+# ============================================================
+# 🔗 Wishlink Product Helpers
+# ============================================================
 def get_final_url_from_redirect(start_url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -56,12 +167,10 @@ def get_product_links_from_post(post_id):
         "user-agent": "Mozilla/5.0",
         "wishlinkid": WISHLINK_ID,
     }
-    
     api_urls = [
         f"https://api.wishlink.com/api/store/getPostOrCollectionProducts?page=1&limit=50&postType=POST&postOrCollectionId={post_id}&sourceApp=STOREFRONT",
         f"https://api.wishlink.com/api/store/getPostOrCollectionProducts?page=1&limit=50&postType=REELS&postOrCollectionId={post_id}&sourceApp=STOREFRONT"
     ]
-    
     for api_url in api_urls:
         try:
             logger.info(f"Trying API: {api_url}")
@@ -77,9 +186,12 @@ def get_product_links_from_post(post_id):
         except Exception as e:
             logger.error(f"API error: {e}")
             continue
-    
     return []
 
+
+# ============================================================
+# 📱 Telegram Bot Handlers
+# ============================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Start command from user: {update.effective_user.id}")
     await update.message.reply_text(
@@ -153,7 +265,10 @@ def process_update_in_thread(update_dict):
         except Exception as e:
             logger.error(f"Error while queuing update for processing: {e}")
 
-# Flask app
+
+# ============================================================
+# 🌐 Flask App
+# ============================================================
 app = Flask(__name__)
 
 @app.route('/')
@@ -168,58 +283,59 @@ def health():
 def status():
     return "Active"
 
-# ✅ ENDPOINT — n8n ke liye (Fixed: External URL redirect bhi handle karta hai)
+
+# ✅ MAIN ENDPOINT — n8n ke liye
+# Product links fetch + affiliate link conversion (auto token refresh)
 @app.route('/get-product-links', methods=['POST'])
 def get_product_links_api():
     try:
         data = request.get_json()
         wishlink_url = data.get('wishlink_url', '')
-        
+
         if not wishlink_url:
             return jsonify({"error": "wishlink_url required"}), 400
-        
+
         logger.info(f"API request for: {wishlink_url}")
-        
+
         if '/share/' in wishlink_url:
             final_url = get_final_url_from_redirect(wishlink_url)
             if not final_url:
                 return jsonify({"error": "Redirect failed"}), 500
-            
+
             logger.info(f"Redirected to: {final_url}")
-            
-            # ✅ FIX: Agar redirect directly Flipkart/Amazon/external pe gaya
-            # (wishlink post page nahi mila) — to us URL ko seedha product link maano
+
+            # ✅ Directly external product URL (Flipkart/Amazon)
             if 'wishlink.com' not in final_url:
-                logger.info(f"External product URL mili directly: {final_url}")
+                logger.info(f"Direct external URL mili: {final_url}")
+                affiliate_link = convert_to_affiliate_link(final_url)
                 return jsonify({
                     "success": True,
                     "post_id": None,
                     "post_type": "DIRECT",
                     "product_links": [final_url],
                     "first_product": final_url,
+                    "affiliate_link": affiliate_link,
                     "total": 1
                 })
-            
-            # Wishlink post page pe gaya — numeric ID nikalo
+
+            # Wishlink post page — numeric ID nikalo
             match = re.search(r'/(?:post|reels)/(\d+)', final_url)
             if not match:
                 return jsonify({"error": f"Post ID nahi mila: {final_url}"}), 500
-            
-            post_id = match.group(1)
+            post_id   = match.group(1)
             post_type = 'REELS' if '/reels/' in final_url else 'POST'
-        
+
         else:
-            # Direct wishlink post/reels URL
             match = re.search(r'/(?:post|reels)/(\d+)', wishlink_url)
             if not match:
                 return jsonify({"error": "URL format galat"}), 400
-            post_id = match.group(1)
+            post_id   = match.group(1)
             post_type = 'REELS' if '/reels/' in wishlink_url else 'POST'
-        
+
         logger.info(f"Post ID: {post_id}, Type: {post_type}")
-        
+
         product_links = get_product_links_from_post(post_id)
-        
+
         if not product_links:
             return jsonify({
                 "success": False,
@@ -227,19 +343,25 @@ def get_product_links_api():
                 "post_id": post_id,
                 "post_type": post_type
             }), 404
-        
+
+        # ✅ First product ko affiliate link mein convert karo (auto token refresh)
+        first_product  = product_links[0]
+        affiliate_link = convert_to_affiliate_link(first_product)
+
         return jsonify({
             "success": True,
             "post_id": post_id,
             "post_type": post_type,
             "product_links": product_links,
-            "first_product": product_links[0],
+            "first_product": first_product,
+            "affiliate_link": affiliate_link,   # ← n8n ye use kare
             "total": len(product_links)
         })
-        
+
     except Exception as e:
         logger.error(f"API error: {e}")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
@@ -252,6 +374,7 @@ def webhook():
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return jsonify({"error": str(e)}), 500
+
 
 def run_event_loop_in_background(loop):
     asyncio.set_event_loop(loop)
@@ -272,7 +395,7 @@ def main():
         await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
     future = asyncio.run_coroutine_threadsafe(setup_webhook(), event_loop)
     future.result()
-    logger.info(f"Webhook set successfully!")
+    logger.info("Webhook set successfully!")
     port = int(os.getenv("PORT", 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
 
