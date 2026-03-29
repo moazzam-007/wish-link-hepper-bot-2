@@ -87,108 +87,68 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def send_links_in_parts(update, all_links, title):
-    """Send links in multiple messages if too many"""
     max_links_per_message = 8
-    
     if len(all_links) <= max_links_per_message:
-        # Single message
         output = f"🎉 {title}\n\n"
         for i, link in enumerate(all_links, 1):
             discount = random.randint(50, 85)
             output += f"{i}. ({discount}% OFF)\n{link}\n\n"
         await update.message.reply_text(output)
     else:
-        # Multiple messages
         total_parts = (len(all_links) + max_links_per_message - 1) // max_links_per_message
-        
         for part in range(total_parts):
             start_idx = part * max_links_per_message
             end_idx = min(start_idx + max_links_per_message, len(all_links))
             part_links = all_links[start_idx:end_idx]
-            
             output = f"🎉 {title} (Part {part + 1}/{total_parts})\n\n"
-            
             for i, link in enumerate(part_links, start_idx + 1):
                 discount = random.randint(50, 85)
                 output += f"{i}. ({discount}% OFF)\n{link}\n\n"
-            
             await update.message.reply_text(output)
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Message received from user: {update.effective_user.id}")
-    
     text = update.message.text or update.message.caption
-    
     if not text:
-        logger.info("No text found in message")
         return
-
     logger.info(f"Processing text: {text}")
-    
-    # Better URL extraction using Telegram entities (if available)
     urls = []
     if update.message.entities:
         for entity in update.message.entities:
             if entity.type == "url":
                 url = text[entity.offset:entity.offset + entity.length]
                 urls.append(url)
-    
-    # Fallback to regex if no entities
     if not urls:
         urls = re.findall(r'(https?://\S+)', text)
-    
     if not urls:
-        logger.info("No HTTP links found in text")
         return
-    
     await update.message.reply_text("Processing your link… 🔄")
-
     all_links = []
-    logger.info(f"Found URLs: {urls}")
-    
     for url in urls:
-        logger.info(f"Processing URL: {url}")
-        
         if "/share/" in url:
-            logger.info(f"Processing share URL: {url}")
             redirected = get_final_url_from_redirect(url)
             if redirected:
                 all_links.append(redirected)
-                logger.info(f"Redirected to: {redirected}")
         elif "wishlink.com" in url:
             post_id = extract_post_id_from_url(url)
             if post_id:
-                logger.info(f"Extracted post ID: {post_id}")
                 product_links = get_product_links_from_post(post_id)
                 all_links.extend(product_links)
-                logger.info(f"Found {len(product_links)} product links")
-            else:
-                logger.info("No post ID found in wishlink URL")
-
-    logger.info(f"Total links found: {len(all_links)}")
-
     if not all_links:
-        logger.info("No product links found")
-        await update.message.reply_text("❌ No product links found. Please check your Wishlink URL format.")
+        await update.message.reply_text("❌ No product links found.")
         return
-    
     title = random.choice(TITLES)
-    
     try:
         await send_links_in_parts(update, all_links, title)
-        logger.info("Response sent successfully")
     except Exception as e:
         logger.error(f"Failed to send response: {e}")
         await update.message.reply_text(f"✅ Found {len(all_links)} product links!")
 
-# FIXED: Efficient threading model as suggested by reviewer
 def process_update_in_thread(update_dict):
-    """Schedules the update to be processed in the running event loop."""
     global telegram_app, event_loop
     if telegram_app and event_loop:
         try:
             update = Update.de_json(update_dict, telegram_app.bot)
-            # Schedule the coroutine on the main event loop from this thread
             asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), event_loop)
         except Exception as e:
             logger.error(f"Error while queuing update for processing: {e}")
@@ -208,13 +168,68 @@ def health():
 def status():
     return "Active"
 
+# ✅ NEW ENDPOINT — n8n ke liye
+@app.route('/get-product-links', methods=['POST'])
+def get_product_links_api():
+    try:
+        data = request.get_json()
+        wishlink_url = data.get('wishlink_url', '')
+        
+        if not wishlink_url:
+            return jsonify({"error": "wishlink_url required"}), 400
+        
+        logger.info(f"API request for: {wishlink_url}")
+        
+        if '/share/' in wishlink_url:
+            final_url = get_final_url_from_redirect(wishlink_url)
+            if not final_url:
+                return jsonify({"error": "Redirect failed"}), 500
+            
+            logger.info(f"Redirected to: {final_url}")
+            
+            match = re.search(r'/(?:post|reels)/(\d+)', final_url)
+            if not match:
+                return jsonify({"error": f"Post ID nahi mila: {final_url}"}), 500
+            
+            post_id = match.group(1)
+            post_type = 'REELS' if '/reels/' in final_url else 'POST'
+        else:
+            match = re.search(r'/(?:post|reels)/(\d+)', wishlink_url)
+            if not match:
+                return jsonify({"error": "URL format galat"}), 400
+            post_id = match.group(1)
+            post_type = 'REELS' if '/reels/' in wishlink_url else 'POST'
+        
+        logger.info(f"Post ID: {post_id}, Type: {post_type}")
+        
+        product_links = get_product_links_from_post(post_id)
+        
+        if not product_links:
+            return jsonify({
+                "success": False,
+                "error": "Koi product nahi mila",
+                "post_id": post_id,
+                "post_type": post_type
+            }), 404
+        
+        return jsonify({
+            "success": True,
+            "post_id": post_id,
+            "post_type": post_type,
+            "product_links": product_links,
+            "first_product": product_links[0],
+            "total": len(product_links)
+        })
+        
+    except Exception as e:
+        logger.error(f"API error: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
     try:
         update_dict = request.get_json()
         if update_dict:
-            # Create a short-lived thread just to queue the task
-            # This ensures the webhook returns '200 OK' immediately
             thread = threading.Thread(target=process_update_in_thread, args=(update_dict,))
             thread.start()
         return jsonify({"status": "ok"})
@@ -222,7 +237,6 @@ def webhook():
         logger.error(f"Webhook error: {e}")
         return jsonify({"error": str(e)}), 500
 
-# Function to run the asyncio event loop in a background thread
 def run_event_loop_in_background(loop):
     asyncio.set_event_loop(loop)
     loop.run_forever()
@@ -230,30 +244,19 @@ def run_event_loop_in_background(loop):
 def main():
     global telegram_app, event_loop
     logger.info("Starting bot...")
-
-    # Create and start the background event loop
     event_loop = asyncio.new_event_loop()
     loop_thread = threading.Thread(target=run_event_loop_in_background, args=(event_loop,), daemon=True)
     loop_thread.start()
-
-    # Create telegram app
     telegram_app = ApplicationBuilder().token(TOKEN).build()
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
-
-    # Setup webhook in the running event loop
     async def setup_webhook():
         await telegram_app.initialize()
         await telegram_app.start()
         await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-
-    # Use run_coroutine_threadsafe to run setup from the main thread
     future = asyncio.run_coroutine_threadsafe(setup_webhook(), event_loop)
-    future.result()  # Wait for webhook setup to complete
-
+    future.result()
     logger.info(f"Webhook set successfully!")
-
-    # Run Flask app
     port = int(os.getenv("PORT", 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
 
