@@ -168,7 +168,7 @@ def health():
 def status():
     return "Active"
 
-# ✅ NEW ENDPOINT — n8n ke liye
+# ✅ ENDPOINT — n8n ke liye (Fixed: External URL redirect bhi handle karta hai)
 @app.route('/get-product-links', methods=['POST'])
 def get_product_links_api():
     try:
@@ -187,13 +187,29 @@ def get_product_links_api():
             
             logger.info(f"Redirected to: {final_url}")
             
+            # ✅ FIX: Agar redirect directly Flipkart/Amazon/external pe gaya
+            # (wishlink post page nahi mila) — to us URL ko seedha product link maano
+            if 'wishlink.com' not in final_url:
+                logger.info(f"External product URL mili directly: {final_url}")
+                return jsonify({
+                    "success": True,
+                    "post_id": None,
+                    "post_type": "DIRECT",
+                    "product_links": [final_url],
+                    "first_product": final_url,
+                    "total": 1
+                })
+            
+            # Wishlink post page pe gaya — numeric ID nikalo
             match = re.search(r'/(?:post|reels)/(\d+)', final_url)
             if not match:
                 return jsonify({"error": f"Post ID nahi mila: {final_url}"}), 500
             
             post_id = match.group(1)
             post_type = 'REELS' if '/reels/' in final_url else 'POST'
+        
         else:
+            # Direct wishlink post/reels URL
             match = re.search(r'/(?:post|reels)/(\d+)', wishlink_url)
             if not match:
                 return jsonify({"error": "URL format galat"}), 400
