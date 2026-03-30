@@ -298,8 +298,10 @@ def create_wishlink_collection(product_urls, collection_name=None):
         logger.error(f"❌ Collection creation failed: {e}")
         return None
 
-    # ── Step 2: Har product add karo ─────────────────────────
+    # ── Step 2: Har product add karo aur TASK ID save karo ────
     added_count = 0
+    task_url_pairs = []  # Naya list task IDs save karne ke liye
+
     for i, prod_url in enumerate(product_urls):
         try:
             logger.info(f"➕ Adding product {i+1}/{len(product_urls)}: {prod_url[:60]}")
@@ -309,8 +311,20 @@ def create_wishlink_collection(product_urls, collection_name=None):
                 json={"url": prod_url, "creator": WISHLINK_CREATOR},
                 timeout=20
             )
-            logger.info(f"Product add: {scrape_resp.status_code} | {scrape_resp.text[:100]}")
-            added_count += 1
+            scrape_data = scrape_resp.json()
+            
+            # Response se task_id nikalo
+            task_id = scrape_data.get("data", {}).get("task_id")
+            if task_id:
+                task_url_pairs.append({
+                    "task_id": task_id,
+                    "url": prod_url
+                })
+                added_count += 1
+                logger.info(f"Product add: 200 | Task ID: {task_id}")
+            else:
+                 logger.warning(f"⚠️ Task ID nahi mili response mein: {scrape_data}")
+
             time.sleep(1.5)  # Rate limit + async task time
         except Exception as e:
             logger.error(f"❌ Product add failed ({prod_url[:40]}): {e}")
@@ -323,28 +337,30 @@ def create_wishlink_collection(product_urls, collection_name=None):
     logger.info(f"⏳ Waiting {wait_time}s for scraping tasks to complete...")
     time.sleep(wait_time)
 
-    # ── Step 4: Finalize ──────────────────────────────────────
+    # ── Step 4: Finalize (Ab JSON format mein) ─────────────────
     try:
         logger.info("🔒 Finalizing collection...")
         
-        # ✅ YAHAN CHANGE KIYA HAI (postCollectionId ki jagah postId kar diya)
-        fin_form = {
-            "postId": (None, str(collection_id)),
-            "creator": (None, WISHLINK_CREATOR),
+        # Ab hum JSON bhej rahe hain
+        fin_payload = {
+            "collectionId": str(collection_id),
+            "postType": "collection",
+            "creator": WISHLINK_CREATOR,
+            "task_url_pairs": task_url_pairs
         }
         
-        fin_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+        # JSON bhejte waqt Content-Type 'application/json' hona chahiye (jo original 'headers' mein hai)
         fin_resp = requests.post(
             "https://api.wishlink.com/api/c/finalizeProducts",
-            headers=fin_headers,
-            files=fin_form,
+            headers=headers, 
+            json=fin_payload,
             timeout=30
         )
         logger.info(f"✅ Finalize: {fin_resp.status_code} | {fin_resp.text[:100]}")
     except Exception as e:
         logger.error(f"⚠️ Finalize warning (non-fatal): {e}")
 
-    # ── Step 4: Collection link banao ─────────────────────────
+    # ── Step 5: Collection link banao ─────────────────────────
     collection_link = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/collection/{collection_id}"
     logger.info(f"✅ Collection ready: {collection_link}")
     return collection_link, collection_id, added_count
