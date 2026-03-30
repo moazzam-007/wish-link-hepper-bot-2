@@ -23,13 +23,13 @@ logger = logging.getLogger(__name__)
 TOKEN                  = os.getenv("BOT_TOKEN")
 WEBHOOK_URL            = os.getenv("WEBHOOK_URL")
 WISHLINK_ID            = os.getenv("WISHLINK_ID", "1752163729058-1dccdb9e-a0f9-f088-a678-e14f8997f719")
-WISHLINK_CREATOR       = os.getenv("WISHLINK_CREATOR", "budget-looks")
+WISHLINK_CREATOR       = os.getenv("WISHLINK_CREATOR", "budget.looks")  # dot wala format
 FIREBASE_API_KEY       = os.getenv("FIREBASE_API_KEY")
 WISHLINK_REFRESH_TOKEN = os.getenv("WISHLINK_REFRESH_TOKEN")
 WISHLINK_BZ_AUTH_KEY   = os.getenv("WISHLINK_BZ_AUTH_KEY")   # _bz_auth_key from browser storage
 
-# URL-safe creator name (dots/hyphens ke saath)
-WISHLINK_CREATOR_URL = WISHLINK_CREATOR.replace(" ", "-").replace(".", "-")
+# URL path mein same creator name use hota hai
+WISHLINK_CREATOR_URL = WISHLINK_CREATOR  # budget.looks as-is
 
 # Random titles for Telegram bot responses
 TITLES = [
@@ -312,13 +312,24 @@ def create_wishlink_collection(product_urls, collection_name=None):
 
     headers = get_creator_headers(token)
 
-    # ── Step 1: Collection banao ──────────────────────────────
+    # ── Step 1: Collection banao (Form Data format!) ─────────
     try:
         logger.info(f"📁 Creating collection: {collection_name}")
+
+        # ✅ Sahi format: multipart/form-data (JSON nahi!)
+        form_data = {
+            "title": (None, collection_name),
+            "image": (None, ""),
+            "thumbnail_type": (None, "manual"),
+            "creator": (None, WISHLINK_CREATOR),
+        }
+        # Form data ke liye Content-Type header remove karo (requests khud set karega)
+        form_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+
         create_resp = requests.post(
             "https://api.wishlink.com/api/c/createEditShopCollection",
-            headers=headers,
-            json={"name": collection_name, "creator": WISHLINK_CREATOR},
+            headers=form_headers,
+            files=form_data,
             timeout=20
         )
         create_resp.raise_for_status()
@@ -344,25 +355,26 @@ def create_wishlink_collection(product_urls, collection_name=None):
         return None
 
     # ── Step 2: Har product add karo ─────────────────────────
+    # ✅ Sahi format: {"url": product_url, "creator": creator}
     added_count = 0
-    for i, url in enumerate(product_urls):
+    for i, prod_url in enumerate(product_urls):
         try:
-            logger.info(f"➕ Adding product {i+1}/{len(product_urls)}: {url[:60]}")
+            logger.info(f"➕ Adding product {i+1}/{len(product_urls)}: {prod_url[:60]}")
             scrape_resp = requests.post(
                 "https://api.wishlink.com/api/c/autoScrapeProduct",
                 headers=headers,
                 json={
-                    "link": url,
-                    "collectionId": collection_id,
+                    "url": prod_url,       # ✅ 'url' field (not 'link')
                     "creator": WISHLINK_CREATOR
+                    # collectionId nahi chahiye — server side handle hota hai
                 },
                 timeout=20
             )
-            logger.info(f"Product add status: {scrape_resp.status_code}")
+            logger.info(f"Product add status: {scrape_resp.status_code} | {scrape_resp.text[:100]}")
             added_count += 1
-            time.sleep(0.8)  # Rate limit se bachne ke liye
+            time.sleep(1.0)  # Rate limit se bachne ke liye
         except Exception as e:
-            logger.error(f"❌ Product add failed ({url[:40]}): {e}")
+            logger.error(f"❌ Product add failed ({prod_url[:40]}): {e}")
             continue
 
     logger.info(f"✅ {added_count}/{len(product_urls)} products added")
@@ -370,10 +382,15 @@ def create_wishlink_collection(product_urls, collection_name=None):
     # ── Step 3: Finalize ─────────────────────────────────────
     try:
         logger.info("🔒 Finalizing products...")
+        fin_form = {
+            "postCollectionId": (None, str(collection_id)),
+            "creator": (None, WISHLINK_CREATOR),
+        }
+        fin_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
         requests.post(
             "https://api.wishlink.com/api/c/finalizeProducts",
-            headers=headers,
-            json={"collectionId": collection_id, "creator": WISHLINK_CREATOR},
+            headers=fin_headers,
+            files=fin_form,
             timeout=15
         )
         logger.info("✅ Products finalized")
