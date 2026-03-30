@@ -336,8 +336,9 @@ def create_wishlink_collection(product_urls, collection_name=None):
         create_data = create_resp.json()
         logger.info(f"Collection create response: {create_data}")
 
-        # Collection ID extract karo
+        # ✅ Actual response: {'success': True, 'collection': '885854'}
         collection_id = (
+            create_data.get("collection") or           # ✅ Real key!
             create_data.get("data", {}).get("id") or
             create_data.get("data", {}).get("postCollectionId") or
             create_data.get("id") or
