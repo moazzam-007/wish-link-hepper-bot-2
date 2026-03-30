@@ -59,7 +59,6 @@ def get_fresh_wishlink_token():
 
     current_time = time.time()
 
-    # Cache check — 5 min buffer ke saath
     if _token_cache["id_token"] and _token_cache["expires_at"] > current_time + 300:
         logger.info("✅ Cached token valid hai — reuse kar raha hoon")
         return _token_cache["id_token"]
@@ -68,7 +67,7 @@ def get_fresh_wishlink_token():
 
     if not FIREBASE_API_KEY or not WISHLINK_REFRESH_TOKEN:
         logger.warning("⚠️ Firebase credentials missing — BZ auth key try karunga")
-        return WISHLINK_BZ_AUTH_KEY  # Fallback to BZ key
+        return WISHLINK_BZ_AUTH_KEY  
 
     try:
         resp = requests.post(
@@ -93,7 +92,6 @@ def get_fresh_wishlink_token():
 
     except Exception as e:
         logger.error(f"❌ Firebase token refresh failed: {e}")
-        # BZ auth key as fallback
         if WISHLINK_BZ_AUTH_KEY:
             logger.info("🔄 BZ auth key fallback use kar raha hoon")
             return WISHLINK_BZ_AUTH_KEY
@@ -101,7 +99,6 @@ def get_fresh_wishlink_token():
 
 
 def get_creator_headers(token=None):
-    """Common headers for Wishlink Creator API calls."""
     if not token:
         token = get_fresh_wishlink_token()
     return {
@@ -117,9 +114,6 @@ def get_creator_headers(token=None):
 # 💰 Affiliate Link Conversion
 # ============================================================
 def convert_to_affiliate_link(product_url):
-    """
-    Kisi bhi raw product URL ko budget.looks ke Wishlink affiliate link mein convert karo.
-    """
     try:
         token = get_fresh_wishlink_token()
         if not token:
@@ -166,17 +160,6 @@ def get_final_url_from_redirect(start_url):
         return None
 
 def get_product_links_from_wishlink_url(wishlink_url):
-    """
-    🔑 UNIFIED FUNCTION — Kisi bhi Wishlink URL se product links nikalo.
-
-    Wishlink ne API update kiya — ab 'username' REQUIRED hai.
-    Handles: /creator/post/ID, /creator/reels/ID, /creator/collection/ID
-
-    Examples:
-      wishlink.com/ryezxn/post/5032147        → 5 products
-      wishlink.com/ryezxn/collection/369306  → 6 products
-      wishlink.com/budget.looks/collection/885774 → 4 products
-    """
     headers = {
         "accept": "*/*",
         "content-type": "application/json",
@@ -186,16 +169,15 @@ def get_product_links_from_wishlink_url(wishlink_url):
         "wishlinkid": WISHLINK_ID,
     }
 
-    # URL se username + type + id extract karo
     m = re.search(r'wishlink\.com/([^/?]+)/(post|reels|collection)/(\d+)', wishlink_url)
     if not m:
         logger.error(f"[WL] URL format nahi pehchana: {wishlink_url}")
         return []
 
-    username  = m.group(1)                                  # e.g. ryezxn, budget.looks
-    url_type  = m.group(2)                                  # post, reels, collection
-    post_id   = m.group(3)                                  # numeric ID
-    post_type = url_type.upper().replace('REELS', 'REELS')  # POST/REELS/COLLECTION
+    username  = m.group(1)
+    url_type  = m.group(2)
+    post_id   = m.group(3)
+    post_type = url_type.upper().replace('REELS', 'REELS')
     if url_type == 'reels':
         post_type = 'REELS'
     elif url_type == 'collection':
@@ -233,14 +215,6 @@ def get_product_links_from_wishlink_url(wishlink_url):
 # 🗂️ Wishlink Collection Creator
 # ============================================================
 def create_wishlink_collection(product_urls, collection_name=None):
-    """
-    User ke Wishlink account mein nayi collection banao.
-
-    product_urls: list of raw product URLs (Flipkart/Amazon etc.)
-    collection_name: optional name for the collection
-
-    Returns: collection_link (string) or None on failure
-    """
     if not product_urls:
         logger.error("❌ Product URLs nahi diye")
         return None
@@ -255,18 +229,16 @@ def create_wishlink_collection(product_urls, collection_name=None):
 
     headers = get_creator_headers(token)
 
-    # ── Step 1: Collection banao (Form Data format!) ─────────
+    # ── Step 1: Collection banao ─────────
     try:
         logger.info(f"📁 Creating collection: {collection_name}")
 
-        # ✅ Sahi format: multipart/form-data (JSON nahi!)
         form_data = {
             "title": (None, collection_name),
             "image": (None, ""),
             "thumbnail_type": (None, "manual"),
             "creator": (None, WISHLINK_CREATOR),
         }
-        # Form data ke liye Content-Type header remove karo (requests khud set karega)
         form_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
 
         create_resp = requests.post(
@@ -277,11 +249,9 @@ def create_wishlink_collection(product_urls, collection_name=None):
         )
         create_resp.raise_for_status()
         create_data = create_resp.json()
-        logger.info(f"Collection create response: {create_data}")
 
-        # ✅ Actual response: {'success': True, 'collection': '885854'}
         collection_id = (
-            create_data.get("collection") or           # ✅ Real key!
+            create_data.get("collection") or
             create_data.get("data", {}).get("id") or
             create_data.get("data", {}).get("postCollectionId") or
             create_data.get("id") or
@@ -300,7 +270,7 @@ def create_wishlink_collection(product_urls, collection_name=None):
 
     # ── Step 2: Har product add karo aur TASK ID save karo ────
     added_count = 0
-    task_url_pairs = []  # Naya list task IDs save karne ke liye
+    task_url_pairs = []
 
     for i, prod_url in enumerate(product_urls):
         try:
@@ -313,7 +283,6 @@ def create_wishlink_collection(product_urls, collection_name=None):
             )
             scrape_data = scrape_resp.json()
             
-            # Response se task_id nikalo
             task_id = scrape_data.get("data", {}).get("task_id")
             if task_id:
                 task_url_pairs.append({
@@ -322,10 +291,8 @@ def create_wishlink_collection(product_urls, collection_name=None):
                 })
                 added_count += 1
                 logger.info(f"Product add: 200 | Task ID: {task_id}")
-            else:
-                 logger.warning(f"⚠️ Task ID nahi mili response mein: {scrape_data}")
 
-            time.sleep(1.5)  # Rate limit + async task time
+            time.sleep(1.5)  
         except Exception as e:
             logger.error(f"❌ Product add failed ({prod_url[:40]}): {e}")
             continue
@@ -333,23 +300,19 @@ def create_wishlink_collection(product_urls, collection_name=None):
     logger.info(f"✅ {added_count}/{len(product_urls)} products queued")
 
     # ── Step 3: Async tasks complete hone ka wait ─────────────
-    wait_time = added_count * 3  # 3 sec per product
+    wait_time = added_count * 3
     logger.info(f"⏳ Waiting {wait_time}s for scraping tasks to complete...")
     time.sleep(wait_time)
 
-    # ── Step 4: Finalize (Ab JSON format mein) ─────────────────
+    # ── Step 4: Finalize ──────────────────────────────────────
     try:
         logger.info("🔒 Finalizing collection...")
-        
-        # Ab hum JSON bhej rahe hain
         fin_payload = {
             "collectionId": str(collection_id),
             "postType": "collection",
             "creator": WISHLINK_CREATOR,
             "task_url_pairs": task_url_pairs
         }
-        
-        # JSON bhejte waqt Content-Type 'application/json' hona chahiye (jo original 'headers' mein hai)
         fin_resp = requests.post(
             "https://api.wishlink.com/api/c/finalizeProducts",
             headers=headers, 
@@ -360,9 +323,31 @@ def create_wishlink_collection(product_urls, collection_name=None):
     except Exception as e:
         logger.error(f"⚠️ Finalize warning (non-fatal): {e}")
 
-    # ── Step 5: Collection link banao ─────────────────────────
+    # ── Step 5: Publish Collection (NEW FIX) ──────────────────
+    try:
+        logger.info("📢 Publishing collection to Live...")
+        pub_payload = {
+            "is_alive": True,
+            "is_hidden": False,
+            "collectionId": str(collection_id),
+            "type": "collection",
+            "action_type": "publish",
+            "creator": WISHLINK_CREATOR,
+            "cross_post_platforms": None
+        }
+        pub_resp = requests.post(
+            "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
+            headers=headers,
+            json=pub_payload,
+            timeout=20
+        )
+        logger.info(f"✅ Publish: {pub_resp.status_code} | {pub_resp.text[:100]}")
+    except Exception as e:
+        logger.error(f"⚠️ Publish failed: {e}")
+
+    # ── Step 6: Collection link banao ─────────────────────────
     collection_link = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/collection/{collection_id}"
-    logger.info(f"✅ Collection ready: {collection_link}")
+    logger.info(f"✅ Collection ready & LIVE: {collection_link}")
     return collection_link, collection_id, added_count
 
 
@@ -419,7 +404,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if redirected:
                 all_links.append(redirected)
         elif "wishlink.com" in url:
-            # ✅ Unified function — POST, REELS, COLLECTION sab handle karta hai
             product_links = get_product_links_from_wishlink_url(url)
             all_links.extend(product_links)
     if not all_links:
@@ -460,9 +444,6 @@ def status():
     return "Active"
 
 
-# ============================================================
-# ✅ ENDPOINT 1 — Get Product Links (existing, unchanged)
-# ============================================================
 @app.route('/get-product-links', methods=['POST'])
 def get_product_links_api():
     try:
@@ -479,10 +460,7 @@ def get_product_links_api():
             if not final_url:
                 return jsonify({"error": "Redirect failed"}), 500
 
-            logger.info(f"Redirected to: {final_url}")
-
             if 'wishlink.com' not in final_url:
-                logger.info(f"Direct external URL mili: {final_url}")
                 affiliate_link = convert_to_affiliate_link(final_url)
                 return jsonify({
                     "success": True,
@@ -507,17 +485,12 @@ def get_product_links_api():
             post_id   = match.group(1)
             post_type = 'REELS' if '/reels/' in wishlink_url else 'POST'
 
-        logger.info(f"Post ID: {post_id}, Type: {post_type}")
-
-        # Note: get_product_links_from_post is not defined in the code snippet but we'll leave it as is
         product_links = get_product_links_from_post(post_id)
 
         if not product_links:
             return jsonify({
                 "success": False,
-                "error": "Koi product nahi mila",
-                "post_id": post_id,
-                "post_type": post_type
+                "error": "Koi product nahi mila"
             }), 404
 
         first_product  = product_links[0]
@@ -538,26 +511,8 @@ def get_product_links_api():
         return jsonify({"error": str(e)}), 500
 
 
-# ============================================================
-# ✅ ENDPOINT 2 — Create Collection (NEW)
-# n8n yahan POST karega, bot collection banayega
-# ============================================================
 @app.route('/create-collection', methods=['POST'])
 def create_collection_api():
-    """
-    Input (JSON):
-      Option A — Direct product URLs:
-        { "product_urls": ["flipkart.com/...", ...], "collection_name": "optional" }
-
-      Option B — Se creator ki wishlink collection URL:
-        { "wishlink_collection_url": "https://wishlink.com/creator/collection/12345" }
-
-      Option C — Creator ki wishlink POST URL:
-        { "wishlink_post_url": "https://wishlink.com/creator/post/12345" }
-
-    Output:
-        { "success": true, "collection_link": "...", "collection_id": 865774, "products_added": 4 }
-    """
     try:
         data = request.get_json()
 
@@ -566,16 +521,12 @@ def create_collection_api():
         wishlink_post_url        = data.get('wishlink_post_url', '')
         collection_name          = data.get('collection_name', '')
 
-        # ── Option B: Collection URL se products nikalo ───────
         if not product_urls and wishlink_collection_url:
-            logger.info(f"Fetching from collection URL: {wishlink_collection_url}")
             product_urls = get_product_links_from_wishlink_url(wishlink_collection_url)
 
-        # ── Option C: Post/Reel URL se products nikalo ────────
         if not product_urls and wishlink_post_url:
             if '/share/' in wishlink_post_url:
                 wishlink_post_url = get_final_url_from_redirect(wishlink_post_url) or wishlink_post_url
-            logger.info(f"Fetching from post URL: {wishlink_post_url}")
             product_urls = get_product_links_from_wishlink_url(wishlink_post_url)
 
         if not product_urls:
@@ -584,9 +535,6 @@ def create_collection_api():
                 "error": "Koi product URL nahi mila. product_urls, wishlink_collection_url, ya wishlink_post_url dena zaroori hai."
             }), 400
 
-        logger.info(f"Creating collection with {len(product_urls)} products")
-
-        # ── Collection banao ──────────────────────────────────
         result = create_wishlink_collection(product_urls, collection_name)
 
         if not result:
@@ -610,9 +558,6 @@ def create_collection_api():
         return jsonify({"error": str(e)}), 500
 
 
-# ============================================================
-# 🔗 Webhook
-# ============================================================
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
     try:
