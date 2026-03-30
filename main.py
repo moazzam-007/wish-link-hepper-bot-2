@@ -20,12 +20,16 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # 🔧 Environment Variables
 # ============================================================
-TOKEN              = os.getenv("BOT_TOKEN")
-WEBHOOK_URL        = os.getenv("WEBHOOK_URL")
-WISHLINK_ID        = os.getenv("WISHLINK_ID", "1752163729058-1dccdb9e-a0f9-f088-a678-e14f8997f719")
-WISHLINK_CREATOR   = os.getenv("WISHLINK_CREATOR", "budget.looks")
-FIREBASE_API_KEY   = os.getenv("FIREBASE_API_KEY")           # AIzaSyDLL6Yr...
-WISHLINK_REFRESH_TOKEN = os.getenv("WISHLINK_REFRESH_TOKEN") # AMf-vBxr4oai...
+TOKEN                  = os.getenv("BOT_TOKEN")
+WEBHOOK_URL            = os.getenv("WEBHOOK_URL")
+WISHLINK_ID            = os.getenv("WISHLINK_ID", "1752163729058-1dccdb9e-a0f9-f088-a678-e14f8997f719")
+WISHLINK_CREATOR       = os.getenv("WISHLINK_CREATOR", "budget-looks")
+FIREBASE_API_KEY       = os.getenv("FIREBASE_API_KEY")
+WISHLINK_REFRESH_TOKEN = os.getenv("WISHLINK_REFRESH_TOKEN")
+WISHLINK_BZ_AUTH_KEY   = os.getenv("WISHLINK_BZ_AUTH_KEY")   # _bz_auth_key from browser storage
+
+# URL-safe creator name (dots/hyphens ke saath)
+WISHLINK_CREATOR_URL = WISHLINK_CREATOR.replace(" ", "-").replace(".", "-")
 
 # Random titles for Telegram bot responses
 TITLES = [
@@ -43,7 +47,7 @@ event_loop = None
 # ============================================================
 _token_cache = {
     "id_token": None,
-    "expires_at": 0   # Unix timestamp
+    "expires_at": 0
 }
 
 def get_fresh_wishlink_token():
@@ -60,11 +64,11 @@ def get_fresh_wishlink_token():
         logger.info("✅ Cached token valid hai — reuse kar raha hoon")
         return _token_cache["id_token"]
 
-    logger.info("🔄 Token refresh kar raha hoon...")
+    logger.info("🔄 Firebase token refresh kar raha hoon...")
 
     if not FIREBASE_API_KEY or not WISHLINK_REFRESH_TOKEN:
-        logger.error("❌ FIREBASE_API_KEY ya WISHLINK_REFRESH_TOKEN env variable missing!")
-        return None
+        logger.warning("⚠️ Firebase credentials missing — BZ auth key try karunga")
+        return WISHLINK_BZ_AUTH_KEY  # Fallback to BZ key
 
     try:
         resp = requests.post(
@@ -81,15 +85,32 @@ def get_fresh_wishlink_token():
         new_token  = data.get("id_token")
         expires_in = int(data.get("expires_in", 3600))
 
-        _token_cache["id_token"]    = new_token
-        _token_cache["expires_at"]  = current_time + expires_in
+        _token_cache["id_token"]   = new_token
+        _token_cache["expires_at"] = current_time + expires_in
 
         logger.info(f"✅ Token refresh successful! {expires_in}s valid")
         return new_token
 
     except Exception as e:
-        logger.error(f"❌ Token refresh failed: {e}")
+        logger.error(f"❌ Firebase token refresh failed: {e}")
+        # BZ auth key as fallback
+        if WISHLINK_BZ_AUTH_KEY:
+            logger.info("🔄 BZ auth key fallback use kar raha hoon")
+            return WISHLINK_BZ_AUTH_KEY
         return None
+
+
+def get_creator_headers(token=None):
+    """Common headers for Wishlink Creator API calls."""
+    if not token:
+        token = get_fresh_wishlink_token()
+    return {
+        "Authorization": f"Token {token}",
+        "Content-Type": "application/json",
+        "Origin": "https://creator.wishlink.com",
+        "Referer": "https://creator.wishlink.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
 
 
 # ============================================================
@@ -97,8 +118,7 @@ def get_fresh_wishlink_token():
 # ============================================================
 def convert_to_affiliate_link(product_url):
     """
-    Kisi bhi raw product URL (Flipkart/Amazon etc.) ko
-    budget.looks ke Wishlink affiliate link mein convert karo.
+    Kisi bhi raw product URL ko budget.looks ke Wishlink affiliate link mein convert karo.
     """
     try:
         token = get_fresh_wishlink_token()
@@ -106,16 +126,9 @@ def convert_to_affiliate_link(product_url):
             logger.warning("⚠️ Token nahi mila — raw URL return karunga")
             return product_url
 
-        headers = {
-            "Authorization": f"Token {token}",
-            "Content-Type": "application/json",
-            "Origin": "https://creator.wishlink.com",
-            "Referer": "https://creator.wishlink.com/"
-        }
-
         resp = requests.post(
             "https://api.wishlink.com/api/c/convertSingleProductLink",
-            headers=headers,
+            headers=get_creator_headers(token),
             json={"link": product_url, "creator": WISHLINK_CREATOR},
             timeout=15
         )
@@ -132,7 +145,7 @@ def convert_to_affiliate_link(product_url):
             logger.info(f"✅ Affiliate link: {affiliate_link}")
             return affiliate_link
         else:
-            logger.warning(f"⚠️ Affiliate link response mein nahi mila: {data}")
+            logger.warning(f"⚠️ Affiliate link nahi mila: {data}")
             return product_url
 
     except Exception as e:
@@ -159,6 +172,7 @@ def extract_post_id_from_url(url):
     return result
 
 def get_product_links_from_post(post_id):
+    """Wishlink POST ya REELS se product links nikalo."""
     headers = {
         "accept": "*/*",
         "content-type": "application/json",
@@ -174,7 +188,7 @@ def get_product_links_from_post(post_id):
     for api_url in api_urls:
         try:
             logger.info(f"Trying API: {api_url}")
-            response = requests.get(api_url, headers=headers)
+            response = requests.get(api_url, headers=headers, timeout=15)
             response.raise_for_status()
             data = response.json()
             products = data.get("data", {}).get("products", [])
@@ -187,6 +201,138 @@ def get_product_links_from_post(post_id):
             logger.error(f"API error: {e}")
             continue
     return []
+
+
+def get_product_links_from_collection(collection_id):
+    """
+    Kisi bhi creator ki Wishlink COLLECTION se saare product links nikalo.
+    collection_id: numeric ID (e.g. 865774)
+    """
+    headers = {
+        "accept": "*/*",
+        "content-type": "application/json",
+        "origin": "https://www.wishlink.com",
+        "referer": "https://www.wishlink.com/",
+        "user-agent": "Mozilla/5.0",
+        "wishlinkid": WISHLINK_ID,
+    }
+    try:
+        api_url = (
+            f"https://api.wishlink.com/api/store/getPostOrCollectionProducts"
+            f"?page=1&limit=50&postType=collection"
+            f"&postOrCollectionId={collection_id}&sourceApp=STOREFRONT"
+        )
+        logger.info(f"Fetching collection products: {api_url}")
+        response = requests.get(api_url, headers=headers, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        products = data.get("data", {}).get("products", [])
+        logger.info(f"Collection products found: {len(products)}")
+        if products:
+            return [p["purchaseUrl"] for p in products if "purchaseUrl" in p]
+    except Exception as e:
+        logger.error(f"Collection product fetch error: {e}")
+    return []
+
+
+# ============================================================
+# 🗂️ Wishlink Collection Creator
+# ============================================================
+def create_wishlink_collection(product_urls, collection_name=None):
+    """
+    User ke Wishlink account mein nayi collection banao.
+
+    product_urls: list of raw product URLs (Flipkart/Amazon etc.)
+    collection_name: optional name for the collection
+
+    Returns: collection_link (string) or None on failure
+    """
+    if not product_urls:
+        logger.error("❌ Product URLs nahi diye")
+        return None
+
+    if not collection_name:
+        collection_name = f"Budget Looks - {time.strftime('%d %b %Y')}"
+
+    token = get_fresh_wishlink_token()
+    if not token:
+        logger.error("❌ Auth token unavailable")
+        return None
+
+    headers = get_creator_headers(token)
+
+    # ── Step 1: Collection banao ──────────────────────────────
+    try:
+        logger.info(f"📁 Creating collection: {collection_name}")
+        create_resp = requests.post(
+            "https://api.wishlink.com/api/c/createEditShopCollection",
+            headers=headers,
+            json={"name": collection_name, "creator": WISHLINK_CREATOR},
+            timeout=20
+        )
+        create_resp.raise_for_status()
+        create_data = create_resp.json()
+        logger.info(f"Collection create response: {create_data}")
+
+        # Collection ID extract karo
+        collection_id = (
+            create_data.get("data", {}).get("id") or
+            create_data.get("data", {}).get("postCollectionId") or
+            create_data.get("id") or
+            create_data.get("postCollectionId")
+        )
+
+        if not collection_id:
+            logger.error(f"❌ Collection ID nahi mila: {create_data}")
+            return None
+
+        logger.info(f"✅ Collection created! ID: {collection_id}")
+
+    except Exception as e:
+        logger.error(f"❌ Collection creation failed: {e}")
+        return None
+
+    # ── Step 2: Har product add karo ─────────────────────────
+    added_count = 0
+    for i, url in enumerate(product_urls):
+        try:
+            logger.info(f"➕ Adding product {i+1}/{len(product_urls)}: {url[:60]}")
+            scrape_resp = requests.post(
+                "https://api.wishlink.com/api/c/autoScrapeProduct",
+                headers=headers,
+                json={
+                    "link": url,
+                    "collectionId": collection_id,
+                    "creator": WISHLINK_CREATOR
+                },
+                timeout=20
+            )
+            logger.info(f"Product add status: {scrape_resp.status_code}")
+            added_count += 1
+            time.sleep(0.8)  # Rate limit se bachne ke liye
+        except Exception as e:
+            logger.error(f"❌ Product add failed ({url[:40]}): {e}")
+            continue
+
+    logger.info(f"✅ {added_count}/{len(product_urls)} products added")
+
+    # ── Step 3: Finalize ─────────────────────────────────────
+    try:
+        logger.info("🔒 Finalizing products...")
+        requests.post(
+            "https://api.wishlink.com/api/c/finalizeProducts",
+            headers=headers,
+            json={"collectionId": collection_id, "creator": WISHLINK_CREATOR},
+            timeout=15
+        )
+        logger.info("✅ Products finalized")
+    except Exception as e:
+        logger.error(f"⚠️ Finalize warning (non-fatal): {e}")
+
+    # ── Step 4: Collection link banao ─────────────────────────
+    collection_link = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/collection/{collection_id}"
+    logger.info(f"✅ Collection ready: {collection_link}")
+    return collection_link, collection_id, added_count
 
 
 # ============================================================
@@ -273,7 +419,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Bot is running!"
+    return "🤖 Wishlink Bot is running!"
 
 @app.route('/health')
 def health():
@@ -284,8 +430,9 @@ def status():
     return "Active"
 
 
-# ✅ MAIN ENDPOINT — n8n ke liye
-# Product links fetch + affiliate link conversion (auto token refresh)
+# ============================================================
+# ✅ ENDPOINT 1 — Get Product Links (existing, unchanged)
+# ============================================================
 @app.route('/get-product-links', methods=['POST'])
 def get_product_links_api():
     try:
@@ -304,7 +451,6 @@ def get_product_links_api():
 
             logger.info(f"Redirected to: {final_url}")
 
-            # ✅ Directly external product URL (Flipkart/Amazon)
             if 'wishlink.com' not in final_url:
                 logger.info(f"Direct external URL mili: {final_url}")
                 affiliate_link = convert_to_affiliate_link(final_url)
@@ -318,7 +464,6 @@ def get_product_links_api():
                     "total": 1
                 })
 
-            # Wishlink post page — numeric ID nikalo
             match = re.search(r'/(?:post|reels)/(\d+)', final_url)
             if not match:
                 return jsonify({"error": f"Post ID nahi mila: {final_url}"}), 500
@@ -344,7 +489,6 @@ def get_product_links_api():
                 "post_type": post_type
             }), 404
 
-        # ✅ First product ko affiliate link mein convert karo (auto token refresh)
         first_product  = product_links[0]
         affiliate_link = convert_to_affiliate_link(first_product)
 
@@ -354,7 +498,7 @@ def get_product_links_api():
             "post_type": post_type,
             "product_links": product_links,
             "first_product": first_product,
-            "affiliate_link": affiliate_link,   # ← n8n ye use kare
+            "affiliate_link": affiliate_link,
             "total": len(product_links)
         })
 
@@ -363,6 +507,88 @@ def get_product_links_api():
         return jsonify({"error": str(e)}), 500
 
 
+# ============================================================
+# ✅ ENDPOINT 2 — Create Collection (NEW)
+# n8n yahan POST karega, bot collection banayega
+# ============================================================
+@app.route('/create-collection', methods=['POST'])
+def create_collection_api():
+    """
+    Input (JSON):
+      Option A — Direct product URLs:
+        { "product_urls": ["flipkart.com/...", ...], "collection_name": "optional" }
+
+      Option B — Se creator ki wishlink collection URL:
+        { "wishlink_collection_url": "https://wishlink.com/creator/collection/12345" }
+
+      Option C — Creator ki wishlink POST URL:
+        { "wishlink_post_url": "https://wishlink.com/creator/post/12345" }
+
+    Output:
+        { "success": true, "collection_link": "...", "collection_id": 865774, "products_added": 4 }
+    """
+    try:
+        data = request.get_json()
+
+        product_urls             = data.get('product_urls', [])
+        wishlink_collection_url  = data.get('wishlink_collection_url', '')
+        wishlink_post_url        = data.get('wishlink_post_url', '')
+        collection_name          = data.get('collection_name', '')
+
+        # ── Option B: Collection URL se products nikalo ───────
+        if not product_urls and wishlink_collection_url:
+            col_match = re.search(r'/collection/(\d+)', wishlink_collection_url)
+            if col_match:
+                col_id = col_match.group(1)
+                logger.info(f"Fetching products from collection: {col_id}")
+                product_urls = get_product_links_from_collection(col_id)
+            else:
+                logger.warning(f"Collection ID nahi mila URL se: {wishlink_collection_url}")
+
+        # ── Option C: Post URL se products nikalo ────────────
+        if not product_urls and wishlink_post_url:
+            if '/share/' in wishlink_post_url:
+                wishlink_post_url = get_final_url_from_redirect(wishlink_post_url) or wishlink_post_url
+            post_id = extract_post_id_from_url(wishlink_post_url)
+            if post_id:
+                logger.info(f"Fetching products from post: {post_id}")
+                product_urls = get_product_links_from_post(post_id)
+
+        if not product_urls:
+            return jsonify({
+                "success": False,
+                "error": "Koi product URL nahi mila. product_urls, wishlink_collection_url, ya wishlink_post_url dena zaroori hai."
+            }), 400
+
+        logger.info(f"Creating collection with {len(product_urls)} products")
+
+        # ── Collection banao ──────────────────────────────────
+        result = create_wishlink_collection(product_urls, collection_name)
+
+        if not result:
+            return jsonify({
+                "success": False,
+                "error": "Collection creation failed — logs check karo"
+            }), 500
+
+        collection_link, collection_id, added_count = result
+
+        return jsonify({
+            "success": True,
+            "collection_link": collection_link,
+            "collection_id": collection_id,
+            "products_added": added_count,
+            "total_input": len(product_urls)
+        })
+
+    except Exception as e:
+        logger.error(f"create_collection API error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
+# 🔗 Webhook
+# ============================================================
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
     try:
@@ -384,15 +610,21 @@ def main():
     global telegram_app, event_loop
     logger.info("Starting bot...")
     event_loop = asyncio.new_event_loop()
-    loop_thread = threading.Thread(target=run_event_loop_in_background, args=(event_loop,), daemon=True)
+    loop_thread = threading.Thread(
+        target=run_event_loop_in_background,
+        args=(event_loop,),
+        daemon=True
+    )
     loop_thread.start()
     telegram_app = ApplicationBuilder().token(TOKEN).build()
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
+
     async def setup_webhook():
         await telegram_app.initialize()
         await telegram_app.start()
         await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+
     future = asyncio.run_coroutine_threadsafe(setup_webhook(), event_loop)
     future.result()
     logger.info("Webhook set successfully!")
