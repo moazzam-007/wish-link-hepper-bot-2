@@ -165,14 +165,18 @@ def get_final_url_from_redirect(start_url):
         logger.error(f"Redirect error: {e}")
         return None
 
-def extract_post_id_from_url(url):
-    match = re.search(r"/(?:post|reels)/(\d+)", url)
-    result = match.group(1) if match else None
-    logger.info(f"Extract post ID from {url}: {result}")
-    return result
+def get_product_links_from_wishlink_url(wishlink_url):
+    """
+    🔑 UNIFIED FUNCTION — Kisi bhi Wishlink URL se product links nikalo.
 
-def get_product_links_from_post(post_id):
-    """Wishlink POST ya REELS se product links nikalo."""
+    Wishlink ne API update kiya — ab 'username' REQUIRED hai.
+    Handles: /creator/post/ID, /creator/reels/ID, /creator/collection/ID
+
+    Examples:
+      wishlink.com/ryezxn/post/5032147       → 5 products
+      wishlink.com/ryezxn/collection/369306  → 6 products
+      wishlink.com/budget.looks/collection/885774 → 4 products
+    """
     headers = {
         "accept": "*/*",
         "content-type": "application/json",
@@ -181,108 +185,47 @@ def get_product_links_from_post(post_id):
         "user-agent": "Mozilla/5.0",
         "wishlinkid": WISHLINK_ID,
     }
-    api_urls = [
-        f"https://api.wishlink.com/api/store/getPostOrCollectionProducts?page=1&limit=50&postType=POST&postOrCollectionId={post_id}&sourceApp=STOREFRONT",
-        f"https://api.wishlink.com/api/store/getPostOrCollectionProducts?page=1&limit=50&postType=REELS&postOrCollectionId={post_id}&sourceApp=STOREFRONT"
-    ]
-    for api_url in api_urls:
-        try:
-            logger.info(f"Trying API: {api_url}")
-            response = requests.get(api_url, headers=headers, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            products = data.get("data", {}).get("products", [])
-            logger.info(f"API response: {len(products)} products found")
-            if products:
-                links = [p["purchaseUrl"] for p in products if "purchaseUrl" in p]
-                logger.info(f"Product links: {len(links)}")
-                return links
-        except Exception as e:
-            logger.error(f"API error: {e}")
-            continue
-    return []
 
+    # URL se username + type + id extract karo
+    m = re.search(r'wishlink\.com/([^/?]+)/(post|reels|collection)/(\d+)', wishlink_url)
+    if not m:
+        logger.error(f"[WL] URL format nahi pehchana: {wishlink_url}")
+        return []
 
-def get_product_links_from_collection(collection_id):
-    """
-    Kisi bhi creator ki Wishlink COLLECTION se saare product links nikalo.
-    collection_id: numeric ID (e.g. 885774)
-    Multiple API endpoints try karta hai — fallback strategy.
-    """
-    storefront_headers = {
-        "accept": "*/*",
-        "content-type": "application/json",
-        "origin": "https://www.wishlink.com",
-        "referer": "https://www.wishlink.com/",
-        "user-agent": "Mozilla/5.0",
-        "wishlinkid": WISHLINK_ID,
-    }
+    username  = m.group(1)                          # e.g. ryezxn, budget.looks
+    url_type  = m.group(2)                          # post, reels, collection
+    post_id   = m.group(3)                          # numeric ID
+    post_type = url_type.upper().replace('REELS', 'REELS')  # POST/REELS/COLLECTION
+    if url_type == 'reels':
+        post_type = 'REELS'
+    elif url_type == 'collection':
+        post_type = 'COLLECTION'
+    else:
+        post_type = 'POST'
 
-    # Attempt 1: storefront — getShopProductDetails (collection ke liye)
+    logger.info(f"[WL] Fetching: username={username}, type={post_type}, id={post_id}")
+
+    url = (
+        f"https://api.wishlink.com/api/store/getPostOrCollectionProducts"
+        f"?page=1&limit=50&postType={post_type}"
+        f"&postOrCollectionId={post_id}"
+        f"&username={username}&sourceApp=STOREFRONT"
+    )
+
     try:
-        url = (
-            f"https://api.wishlink.com/api/store/getShopProductDetails"
-            f"?posttype=collection&postCollectionId={collection_id}&sourceApp=STOREFRONT"
-        )
-        logger.info(f"[Collection A1] Trying: {url}")
-        r = requests.get(url, headers=storefront_headers, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        products = (
-            data.get("data", {}).get("products") or
-            data.get("data", {}).get("postProducts") or []
-        )
-        if products:
-            links = [p.get("purchaseUrl") or p.get("url") for p in products if p.get("purchaseUrl") or p.get("url")]
-            logger.info(f"[Collection A1] ✅ {len(links)} products mila")
-            return links
-    except Exception as e:
-        logger.warning(f"[Collection A1] Failed: {e}")
-
-    # Attempt 2: storefront — getPostOrCollectionProducts with COLLECTION (uppercase)
-    try:
-        url = (
-            f"https://api.wishlink.com/api/store/getPostOrCollectionProducts"
-            f"?page=1&limit=50&postType=COLLECTION"
-            f"&postOrCollectionId={collection_id}&sourceApp=STOREFRONT"
-        )
-        logger.info(f"[Collection A2] Trying: {url}")
-        r = requests.get(url, headers=storefront_headers, timeout=15)
+        r = requests.get(url, headers=headers, timeout=15)
         r.raise_for_status()
         data = r.json()
         products = data.get("data", {}).get("products", [])
         if products:
             links = [p["purchaseUrl"] for p in products if "purchaseUrl" in p]
-            logger.info(f"[Collection A2] ✅ {len(links)} products mila")
+            logger.info(f"[WL] ✅ {len(links)} products mila from {url_type}/{post_id}")
             return links
+        else:
+            logger.warning(f"[WL] 0 products in response for {username}/{url_type}/{post_id}")
     except Exception as e:
-        logger.warning(f"[Collection A2] Failed: {e}")
+        logger.error(f"[WL] ❌ API error: {e}")
 
-    # Attempt 3: Creator API (auth ke saath) — getShopPostsOnCollectionDetails
-    try:
-        token = get_fresh_wishlink_token()
-        if token:
-            url = (
-                f"https://api.wishlink.com/api/c/getShopPostsOnCollectionDetails"
-                f"?posttype=collection&postCollectionId={collection_id}"
-                f"&creator={WISHLINK_CREATOR}"
-            )
-            logger.info(f"[Collection A3] Trying with auth: {url}")
-            r = requests.get(url, headers=get_creator_headers(token), timeout=15)
-            r.raise_for_status()
-            data = r.json()
-            products = (
-                data.get("data", {}).get("products") or
-                data.get("data", {}).get("postProducts") or []
-            )
-            if products:
-                links = [p.get("purchaseUrl") or p.get("link") for p in products if p.get("purchaseUrl") or p.get("link")]
-                logger.info(f"[Collection A3] ✅ {len(links)} products mila")
-                return links
-    except Exception as e:
-        logger.warning(f"[Collection A3] Failed: {e}")
-
-    logger.error(f"❌ Saare collection API attempts fail ho gaye for ID: {collection_id}")
     return []
 
 
@@ -356,7 +299,6 @@ def create_wishlink_collection(product_urls, collection_name=None):
         return None
 
     # ── Step 2: Har product add karo ─────────────────────────
-    # ✅ Sahi format: {"url": product_url, "creator": creator}
     added_count = 0
     for i, prod_url in enumerate(product_urls):
         try:
@@ -364,37 +306,38 @@ def create_wishlink_collection(product_urls, collection_name=None):
             scrape_resp = requests.post(
                 "https://api.wishlink.com/api/c/autoScrapeProduct",
                 headers=headers,
-                json={
-                    "url": prod_url,       # ✅ 'url' field (not 'link')
-                    "creator": WISHLINK_CREATOR
-                    # collectionId nahi chahiye — server side handle hota hai
-                },
+                json={"url": prod_url, "creator": WISHLINK_CREATOR},
                 timeout=20
             )
-            logger.info(f"Product add status: {scrape_resp.status_code} | {scrape_resp.text[:100]}")
+            logger.info(f"Product add: {scrape_resp.status_code} | {scrape_resp.text[:100]}")
             added_count += 1
-            time.sleep(1.0)  # Rate limit se bachne ke liye
+            time.sleep(1.5)  # Rate limit + async task time
         except Exception as e:
             logger.error(f"❌ Product add failed ({prod_url[:40]}): {e}")
             continue
 
-    logger.info(f"✅ {added_count}/{len(product_urls)} products added")
+    logger.info(f"✅ {added_count}/{len(product_urls)} products queued")
 
-    # ── Step 3: Finalize ─────────────────────────────────────
+    # ── Step 3: Async tasks complete hone ka wait ─────────────
+    wait_time = added_count * 3  # 3 sec per product
+    logger.info(f"⏳ Waiting {wait_time}s for scraping tasks to complete...")
+    time.sleep(wait_time)
+
+    # ── Step 4: Finalize ──────────────────────────────────────
     try:
-        logger.info("🔒 Finalizing products...")
+        logger.info("🔒 Finalizing collection...")
         fin_form = {
             "postCollectionId": (None, str(collection_id)),
             "creator": (None, WISHLINK_CREATOR),
         }
         fin_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
-        requests.post(
+        fin_resp = requests.post(
             "https://api.wishlink.com/api/c/finalizeProducts",
             headers=fin_headers,
             files=fin_form,
-            timeout=15
+            timeout=30
         )
-        logger.info("✅ Products finalized")
+        logger.info(f"✅ Finalize: {fin_resp.status_code} | {fin_resp.text[:100]}")
     except Exception as e:
         logger.error(f"⚠️ Finalize warning (non-fatal): {e}")
 
@@ -457,10 +400,9 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if redirected:
                 all_links.append(redirected)
         elif "wishlink.com" in url:
-            post_id = extract_post_id_from_url(url)
-            if post_id:
-                product_links = get_product_links_from_post(post_id)
-                all_links.extend(product_links)
+            # ✅ Unified function — POST, REELS, COLLECTION sab handle karta hai
+            product_links = get_product_links_from_wishlink_url(url)
+            all_links.extend(product_links)
     if not all_links:
         await update.message.reply_text("❌ No product links found.")
         return
@@ -605,23 +547,17 @@ def create_collection_api():
         collection_name          = data.get('collection_name', '')
 
         # ── Option B: Collection URL se products nikalo ───────
+        # ── Option B: Collection URL se products nikalo ───────
         if not product_urls and wishlink_collection_url:
-            col_match = re.search(r'/collection/(\d+)', wishlink_collection_url)
-            if col_match:
-                col_id = col_match.group(1)
-                logger.info(f"Fetching products from collection: {col_id}")
-                product_urls = get_product_links_from_collection(col_id)
-            else:
-                logger.warning(f"Collection ID nahi mila URL se: {wishlink_collection_url}")
+            logger.info(f"Fetching from collection URL: {wishlink_collection_url}")
+            product_urls = get_product_links_from_wishlink_url(wishlink_collection_url)
 
-        # ── Option C: Post URL se products nikalo ────────────
+        # ── Option C: Post/Reel URL se products nikalo ────────
         if not product_urls and wishlink_post_url:
             if '/share/' in wishlink_post_url:
                 wishlink_post_url = get_final_url_from_redirect(wishlink_post_url) or wishlink_post_url
-            post_id = extract_post_id_from_url(wishlink_post_url)
-            if post_id:
-                logger.info(f"Fetching products from post: {post_id}")
-                product_urls = get_product_links_from_post(post_id)
+            logger.info(f"Fetching from post URL: {wishlink_post_url}")
+            product_urls = get_product_links_from_wishlink_url(wishlink_post_url)
 
         if not product_urls:
             return jsonify({
