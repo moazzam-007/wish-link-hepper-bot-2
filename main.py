@@ -206,9 +206,10 @@ def get_product_links_from_post(post_id):
 def get_product_links_from_collection(collection_id):
     """
     Kisi bhi creator ki Wishlink COLLECTION se saare product links nikalo.
-    collection_id: numeric ID (e.g. 865774)
+    collection_id: numeric ID (e.g. 885774)
+    Multiple API endpoints try karta hai — fallback strategy.
     """
-    headers = {
+    storefront_headers = {
         "accept": "*/*",
         "content-type": "application/json",
         "origin": "https://www.wishlink.com",
@@ -216,22 +217,72 @@ def get_product_links_from_collection(collection_id):
         "user-agent": "Mozilla/5.0",
         "wishlinkid": WISHLINK_ID,
     }
+
+    # Attempt 1: storefront — getShopProductDetails (collection ke liye)
     try:
-        api_url = (
+        url = (
+            f"https://api.wishlink.com/api/store/getShopProductDetails"
+            f"?posttype=collection&postCollectionId={collection_id}&sourceApp=STOREFRONT"
+        )
+        logger.info(f"[Collection A1] Trying: {url}")
+        r = requests.get(url, headers=storefront_headers, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        products = (
+            data.get("data", {}).get("products") or
+            data.get("data", {}).get("postProducts") or []
+        )
+        if products:
+            links = [p.get("purchaseUrl") or p.get("url") for p in products if p.get("purchaseUrl") or p.get("url")]
+            logger.info(f"[Collection A1] ✅ {len(links)} products mila")
+            return links
+    except Exception as e:
+        logger.warning(f"[Collection A1] Failed: {e}")
+
+    # Attempt 2: storefront — getPostOrCollectionProducts with COLLECTION (uppercase)
+    try:
+        url = (
             f"https://api.wishlink.com/api/store/getPostOrCollectionProducts"
-            f"?page=1&limit=50&postType=collection"
+            f"?page=1&limit=50&postType=COLLECTION"
             f"&postOrCollectionId={collection_id}&sourceApp=STOREFRONT"
         )
-        logger.info(f"Fetching collection products: {api_url}")
-        response = requests.get(api_url, headers=headers, timeout=15)
-        response.raise_for_status()
-        data = response.json()
+        logger.info(f"[Collection A2] Trying: {url}")
+        r = requests.get(url, headers=storefront_headers, timeout=15)
+        r.raise_for_status()
+        data = r.json()
         products = data.get("data", {}).get("products", [])
-        logger.info(f"Collection products found: {len(products)}")
         if products:
-            return [p["purchaseUrl"] for p in products if "purchaseUrl" in p]
+            links = [p["purchaseUrl"] for p in products if "purchaseUrl" in p]
+            logger.info(f"[Collection A2] ✅ {len(links)} products mila")
+            return links
     except Exception as e:
-        logger.error(f"Collection product fetch error: {e}")
+        logger.warning(f"[Collection A2] Failed: {e}")
+
+    # Attempt 3: Creator API (auth ke saath) — getShopPostsOnCollectionDetails
+    try:
+        token = get_fresh_wishlink_token()
+        if token:
+            url = (
+                f"https://api.wishlink.com/api/c/getShopPostsOnCollectionDetails"
+                f"?posttype=collection&postCollectionId={collection_id}"
+                f"&creator={WISHLINK_CREATOR}"
+            )
+            logger.info(f"[Collection A3] Trying with auth: {url}")
+            r = requests.get(url, headers=get_creator_headers(token), timeout=15)
+            r.raise_for_status()
+            data = r.json()
+            products = (
+                data.get("data", {}).get("products") or
+                data.get("data", {}).get("postProducts") or []
+            )
+            if products:
+                links = [p.get("purchaseUrl") or p.get("link") for p in products if p.get("purchaseUrl") or p.get("link")]
+                logger.info(f"[Collection A3] ✅ {len(links)} products mila")
+                return links
+    except Exception as e:
+        logger.warning(f"[Collection A3] Failed: {e}")
+
+    logger.error(f"❌ Saare collection API attempts fail ho gaye for ID: {collection_id}")
     return []
 
 
