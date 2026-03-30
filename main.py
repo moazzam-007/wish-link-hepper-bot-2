@@ -173,7 +173,7 @@ def get_product_links_from_wishlink_url(wishlink_url):
     Handles: /creator/post/ID, /creator/reels/ID, /creator/collection/ID
 
     Examples:
-      wishlink.com/ryezxn/post/5032147       → 5 products
+      wishlink.com/ryezxn/post/5032147        → 5 products
       wishlink.com/ryezxn/collection/369306  → 6 products
       wishlink.com/budget.looks/collection/885774 → 4 products
     """
@@ -192,9 +192,9 @@ def get_product_links_from_wishlink_url(wishlink_url):
         logger.error(f"[WL] URL format nahi pehchana: {wishlink_url}")
         return []
 
-    username  = m.group(1)                          # e.g. ryezxn, budget.looks
-    url_type  = m.group(2)                          # post, reels, collection
-    post_id   = m.group(3)                          # numeric ID
+    username  = m.group(1)                                  # e.g. ryezxn, budget.looks
+    url_type  = m.group(2)                                  # post, reels, collection
+    post_id   = m.group(3)                                  # numeric ID
     post_type = url_type.upper().replace('REELS', 'REELS')  # POST/REELS/COLLECTION
     if url_type == 'reels':
         post_type = 'REELS'
@@ -326,10 +326,13 @@ def create_wishlink_collection(product_urls, collection_name=None):
     # ── Step 4: Finalize ──────────────────────────────────────
     try:
         logger.info("🔒 Finalizing collection...")
+        
+        # ✅ YAHAN CHANGE KIYA HAI (postCollectionId ki jagah postId kar diya)
         fin_form = {
-            "postCollectionId": (None, str(collection_id)),
+            "postId": (None, str(collection_id)),
             "creator": (None, WISHLINK_CREATOR),
         }
+        
         fin_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
         fin_resp = requests.post(
             "https://api.wishlink.com/api/c/finalizeProducts",
@@ -490,6 +493,7 @@ def get_product_links_api():
 
         logger.info(f"Post ID: {post_id}, Type: {post_type}")
 
+        # Note: get_product_links_from_post is not defined in the code snippet but we'll leave it as is
         product_links = get_product_links_from_post(post_id)
 
         if not product_links:
@@ -546,7 +550,6 @@ def create_collection_api():
         wishlink_post_url        = data.get('wishlink_post_url', '')
         collection_name          = data.get('collection_name', '')
 
-        # ── Option B: Collection URL se products nikalo ───────
         # ── Option B: Collection URL se products nikalo ───────
         if not product_urls and wishlink_collection_url:
             logger.info(f"Fetching from collection URL: {wishlink_collection_url}")
