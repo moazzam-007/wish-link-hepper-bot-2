@@ -602,6 +602,10 @@ def create_collection_with_singles_api():
         else:
             logger.warning("⚠️ Collection creation failed, sirf singles return karunga")
 
+        # ── COOLDOWN: Collection creation ne API bahut use kiya, rate limit reset hone do ──
+        logger.info("⏳ Waiting 120s for API rate limit to reset before affiliate conversion...")
+        time.sleep(120)
+
         # Step 4: Har product ka individual affiliate link banao (BATCH MODE)
         # Collection me saare products hain, but individual links sirf max 10
         MAX_SINGLES = 10
