@@ -605,14 +605,33 @@ def create_collection_with_singles_api():
         # Step 4: Har product ka individual affiliate link banao
         individual_affiliate_links = []
         for i, prod_url in enumerate(product_urls):
-            try:
-                aff_link = convert_to_affiliate_link(prod_url)
-                individual_affiliate_links.append(aff_link)
-                logger.info(f"🔗 Affiliate {i+1}/{len(product_urls)}: {aff_link[:60]}")
-                time.sleep(0.5)  # Rate limit protection
-            except Exception as e:
-                logger.error(f"⚠️ Affiliate conversion failed for {prod_url[:40]}: {e}")
-                individual_affiliate_links.append(prod_url)  # Raw URL as fallback
+            max_retries = 2
+            converted = False
+            for attempt in range(max_retries + 1):
+                try:
+                    aff_link = convert_to_affiliate_link(prod_url)
+                    # Check if conversion actually worked (not raw URL returned)
+                    if aff_link and aff_link != prod_url:
+                        individual_affiliate_links.append(aff_link)
+                        logger.info(f"🔗 Affiliate {i+1}/{len(product_urls)}: {aff_link[:60]}")
+                        converted = True
+                        break
+                    else:
+                        logger.warning(f"⚠️ Affiliate {i+1} returned raw URL, attempt {attempt+1}")
+                        if attempt < max_retries:
+                            time.sleep(5)  # Wait before retry
+                except Exception as e:
+                    logger.error(f"⚠️ Affiliate {i+1} attempt {attempt+1} failed: {e}")
+                    if attempt < max_retries:
+                        wait = 5 * (attempt + 1)  # Exponential: 5s, 10s
+                        logger.info(f"⏳ Rate limit hit, waiting {wait}s before retry...")
+                        time.sleep(wait)
+
+            if not converted:
+                individual_affiliate_links.append(prod_url)  # Raw URL fallback
+                logger.warning(f"⚠️ Using raw URL fallback for product {i+1}")
+
+            time.sleep(2.5)  # 2.5s gap between each conversion to avoid 429
 
         return jsonify({
             "success": True,
