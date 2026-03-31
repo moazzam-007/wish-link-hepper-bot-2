@@ -603,12 +603,17 @@ def create_collection_with_singles_api():
             logger.warning("⚠️ Collection creation failed, sirf singles return karunga")
 
         # Step 4: Har product ka individual affiliate link banao (BATCH MODE)
+        # Collection me saare products hain, but individual links sirf max 10
+        MAX_SINGLES = 10
+        singles_to_convert = product_urls[:MAX_SINGLES]
+        logger.info(f"🔗 Converting {len(singles_to_convert)}/{len(product_urls)} products to individual links (max {MAX_SINGLES})")
+
         BATCH_SIZE = 5
         COOLDOWN_SECONDS = 120  # 2 min cooldown after every 5
         GAP_SECONDS = 1         # 1 sec between each conversion
 
         individual_affiliate_links = []
-        for i, prod_url in enumerate(product_urls):
+        for i, prod_url in enumerate(singles_to_convert):
             # Affiliate conversion with 1 retry
             converted = False
             for attempt in range(2):  # max 2 attempts (0, 1)
