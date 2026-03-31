@@ -602,36 +602,45 @@ def create_collection_with_singles_api():
         else:
             logger.warning("⚠️ Collection creation failed, sirf singles return karunga")
 
-        # Step 4: Har product ka individual affiliate link banao
+        # Step 4: Har product ka individual affiliate link banao (BATCH MODE)
+        BATCH_SIZE = 5
+        COOLDOWN_SECONDS = 120  # 2 min cooldown after every 5
+        GAP_SECONDS = 1         # 1 sec between each conversion
+
         individual_affiliate_links = []
         for i, prod_url in enumerate(product_urls):
-            max_retries = 2
+            # Affiliate conversion with 1 retry
             converted = False
-            for attempt in range(max_retries + 1):
+            for attempt in range(2):  # max 2 attempts (0, 1)
                 try:
                     aff_link = convert_to_affiliate_link(prod_url)
-                    # Check if conversion actually worked (not raw URL returned)
                     if aff_link and aff_link != prod_url:
                         individual_affiliate_links.append(aff_link)
                         logger.info(f"🔗 Affiliate {i+1}/{len(product_urls)}: {aff_link[:60]}")
                         converted = True
                         break
                     else:
-                        logger.warning(f"⚠️ Affiliate {i+1} returned raw URL, attempt {attempt+1}")
-                        if attempt < max_retries:
-                            time.sleep(5)  # Wait before retry
+                        logger.warning(f"⚠️ Affiliate {i+1} raw URL returned, attempt {attempt+1}")
+                        if attempt == 0:
+                            time.sleep(10)
                 except Exception as e:
                     logger.error(f"⚠️ Affiliate {i+1} attempt {attempt+1} failed: {e}")
-                    if attempt < max_retries:
-                        wait = 5 * (attempt + 1)  # Exponential: 5s, 10s
-                        logger.info(f"⏳ Rate limit hit, waiting {wait}s before retry...")
-                        time.sleep(wait)
+                    if attempt == 0:
+                        time.sleep(10)
 
             if not converted:
-                individual_affiliate_links.append(prod_url)  # Raw URL fallback
-                logger.warning(f"⚠️ Using raw URL fallback for product {i+1}")
+                individual_affiliate_links.append(prod_url)
+                logger.warning(f"⚠️ Fallback raw URL for product {i+1}")
 
-            time.sleep(2.5)  # 2.5s gap between each conversion to avoid 429
+            # 1 sec gap between each conversion
+            time.sleep(GAP_SECONDS)
+
+            # After every 5th product, 2 minute cooldown (skip if last product)
+            if (i + 1) % BATCH_SIZE == 0 and (i + 1) < len(product_urls):
+                logger.info(f"⏳ Batch {(i+1)//BATCH_SIZE} done. Cooling down {COOLDOWN_SECONDS}s...")
+                time.sleep(COOLDOWN_SECONDS)
+
+        logger.info(f"✅ Affiliate conversion done: {len([l for l in individual_affiliate_links if 'wishlink.com/share' in l])}/{len(product_urls)} converted")
 
         return jsonify({
             "success": True,
