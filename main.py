@@ -558,6 +558,77 @@ def create_collection_api():
         return jsonify({"error": str(e)}), 500
 
 
+# ============================================================
+# ✅ ENDPOINT 3 — Collection + Individual Affiliate Links
+# Pinterest CSV ke liye: Pin1=Collection, Pin2+=Individual
+# ============================================================
+@app.route('/create-collection-with-singles', methods=['POST'])
+def create_collection_with_singles_api():
+    try:
+        data = request.get_json()
+
+        wishlink_url    = data.get('wishlink_url', '')
+        collection_name = data.get('collection_name', '')
+
+        if not wishlink_url:
+            return jsonify({"success": False, "error": "wishlink_url required"}), 400
+
+        # Step 1: Redirect handle karo (share links ke liye)
+        if '/share/' in wishlink_url:
+            wishlink_url = get_final_url_from_redirect(wishlink_url) or wishlink_url
+
+        # Step 2: Products extract karo
+        logger.info(f"📦 Extracting products from: {wishlink_url}")
+        product_urls = get_product_links_from_wishlink_url(wishlink_url)
+
+        if not product_urls:
+            return jsonify({
+                "success": False,
+                "error": "Koi product nahi mila is URL se"
+            }), 404
+
+        logger.info(f"✅ {len(product_urls)} products extracted")
+
+        # Step 3: Collection banao
+        result = create_wishlink_collection(product_urls, collection_name)
+
+        collection_link = ""
+        collection_id = ""
+        added_count = 0
+
+        if result:
+            collection_link, collection_id, added_count = result
+            logger.info(f"✅ Collection ready: {collection_link}")
+        else:
+            logger.warning("⚠️ Collection creation failed, sirf singles return karunga")
+
+        # Step 4: Har product ka individual affiliate link banao
+        individual_affiliate_links = []
+        for i, prod_url in enumerate(product_urls):
+            try:
+                aff_link = convert_to_affiliate_link(prod_url)
+                individual_affiliate_links.append(aff_link)
+                logger.info(f"🔗 Affiliate {i+1}/{len(product_urls)}: {aff_link[:60]}")
+                time.sleep(0.5)  # Rate limit protection
+            except Exception as e:
+                logger.error(f"⚠️ Affiliate conversion failed for {prod_url[:40]}: {e}")
+                individual_affiliate_links.append(prod_url)  # Raw URL as fallback
+
+        return jsonify({
+            "success": True,
+            "collection_link": collection_link,
+            "collection_id": str(collection_id),
+            "products_added": added_count,
+            "total_products": len(product_urls),
+            "product_urls": product_urls,
+            "individual_affiliate_links": individual_affiliate_links
+        })
+
+    except Exception as e:
+        logger.error(f"create_collection_with_singles API error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
     try:
