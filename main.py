@@ -67,7 +67,7 @@ def get_fresh_wishlink_token():
 
     if not FIREBASE_API_KEY or not WISHLINK_REFRESH_TOKEN:
         logger.warning("⚠️ Firebase credentials missing — BZ auth key try karunga")
-        return WISHLINK_BZ_AUTH_KEY  
+        return WISHLINK_BZ_AUTH_KEY
 
     try:
         resp = requests.post(
@@ -177,7 +177,7 @@ def get_product_links_from_wishlink_url(wishlink_url):
     username  = m.group(1)
     url_type  = m.group(2)
     post_id   = m.group(3)
-    post_type = url_type.upper().replace('REELS', 'REELS')
+
     if url_type == 'reels':
         post_type = 'REELS'
     elif url_type == 'collection':
@@ -282,7 +282,7 @@ def create_wishlink_collection(product_urls, collection_name=None):
                 timeout=20
             )
             scrape_data = scrape_resp.json()
-            
+
             task_id = scrape_data.get("data", {}).get("task_id")
             if task_id:
                 task_url_pairs.append({
@@ -292,7 +292,7 @@ def create_wishlink_collection(product_urls, collection_name=None):
                 added_count += 1
                 logger.info(f"Product add: 200 | Task ID: {task_id}")
 
-            time.sleep(1.5)  
+            time.sleep(1.5)
         except Exception as e:
             logger.error(f"❌ Product add failed ({prod_url[:40]}): {e}")
             continue
@@ -315,7 +315,7 @@ def create_wishlink_collection(product_urls, collection_name=None):
         }
         fin_resp = requests.post(
             "https://api.wishlink.com/api/c/finalizeProducts",
-            headers=headers, 
+            headers=headers,
             json=fin_payload,
             timeout=30
         )
@@ -323,7 +323,7 @@ def create_wishlink_collection(product_urls, collection_name=None):
     except Exception as e:
         logger.error(f"⚠️ Finalize warning (non-fatal): {e}")
 
-    # ── Step 5: Publish Collection (NEW FIX) ──────────────────
+    # ── Step 5: Publish Collection ────────────────────────────
     try:
         logger.info("📢 Publishing collection to Live...")
         pub_payload = {
@@ -354,11 +354,212 @@ def create_wishlink_collection(product_urls, collection_name=None):
 # ============================================================
 # 📱 Telegram Bot Handlers
 # ============================================================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Start command from user: {update.effective_user.id}")
     await update.message.reply_text(
-        "Hey! 👋 Send me a Wishlink or Instagram post/reel link and I'll fetch the real product links for you.\n\nExample:\nhttps://www.wishlink.com/share/dupdx\nor\nhttps://wishlink.com/username/post/123456"
+        "👋 Budget Looks Bot mein swagat hai!\n\n"
+        "Neeche diye commands use karo:\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔍 /extraction\n"
+        "Wishlink URL do → original product links milenge\n\n"
+        "📦 /create_collection\n"
+        "Wishlink post/collection URL do → ek affiliate collection link milega\n\n"
+        "🔗 /single_affiliate\n"
+        "Koi bhi ek product URL do → ek affiliate Wishlink milega\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Kaise use karein:\n"
+        "1. Pehle command type karo\n"
+        "2. Phir apni link bhejo\n"
+        "3. Result aayega automatically ✅"
     )
+
+
+# ── NEW: Command Handlers — state set karte hain ─────────────
+
+async def cmd_extraction(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['state'] = 'extraction'
+    await update.message.reply_text(
+        "🔍 Extraction Mode\n\n"
+        "Ab ek Wishlink URL bhejo — main usme se saare product links nikaal dunga.\n\n"
+        "Example:\n"
+        "https://www.wishlink.com/username/post/123456\n"
+        "ya\n"
+        "https://www.wishlink.com/share/xxxxx"
+    )
+
+
+async def cmd_create_collection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['state'] = 'create_collection'
+    await update.message.reply_text(
+        "📦 Collection Creation Mode\n\n"
+        "Ek Wishlink post/reel/collection URL bhejo.\n"
+        "Main usme se products extract karke affiliate collection bana dunga.\n\n"
+        "Example:\n"
+        "https://www.wishlink.com/username/collection/123456\n"
+        "ya koi bhi post/reel link"
+    )
+
+
+async def cmd_single_affiliate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['state'] = 'single_affiliate'
+    await update.message.reply_text(
+        "🔗 Single Affiliate Mode\n\n"
+        "Koi bhi ek product URL bhejo — main use Wishlink affiliate link mein convert kar dunga.\n\n"
+        "Example:\n"
+        "https://www.amazon.in/dp/XXXXXX\n"
+        "ya koi bhi supported product URL"
+    )
+
+
+# ── NEW: State-based sub-handlers ────────────────────────────
+
+async def _handle_extraction(update, context, urls):
+    if not urls:
+        await update.message.reply_text("❌ Koi valid URL nahi mila. Dobara bhejo.")
+        return
+
+    context.user_data['state'] = None
+    url = urls[0]
+
+    await update.message.reply_text("🔍 Extracting product links... ⏳")
+
+    all_links = []
+
+    if '/share/' in url:
+        redirected = get_final_url_from_redirect(url)
+        if redirected:
+            if 'wishlink.com' in redirected:
+                all_links = get_product_links_from_wishlink_url(redirected)
+            else:
+                all_links = [redirected]
+    elif 'wishlink.com' in url:
+        all_links = get_product_links_from_wishlink_url(url)
+
+    if not all_links:
+        await update.message.reply_text(
+            "❌ Koi product links nahi mile.\n"
+            "Sahi Wishlink URL check karo aur dobara try karo.\n\n"
+            "Phir se try karne ke liye /extraction bhejo."
+        )
+        return
+
+    # Parts mein bhejo (Telegram 4096 char limit)
+    chunk = f"✅ {len(all_links)} Products Mile!\n\n"
+    for i, link in enumerate(all_links, 1):
+        line = f"{i}. {link}\n\n"
+        if len(chunk) + len(line) > 3800:
+            await update.message.reply_text(chunk)
+            chunk = ""
+        chunk += line
+
+    if chunk:
+        await update.message.reply_text(chunk)
+
+    await update.message.reply_text(
+        f"🎯 Total: {len(all_links)} links extracted!\n\n"
+        "Agle kaam ke liye:\n/extraction | /create_collection | /single_affiliate"
+    )
+
+
+async def _handle_create_collection(update, context, urls):
+    if not urls:
+        await update.message.reply_text("❌ Koi valid URL nahi mila. Dobara bhejo.")
+        return
+
+    context.user_data['state'] = None
+    url = urls[0]
+
+    await update.message.reply_text(
+        "📦 Collection bana raha hoon...\n"
+        "⏳ Thoda time lagega (2-5 min) — please wait karo!"
+    )
+
+    if '/share/' in url:
+        url = get_final_url_from_redirect(url) or url
+
+    product_urls = get_product_links_from_wishlink_url(url)
+
+    if not product_urls:
+        await update.message.reply_text(
+            "❌ Products nahi mile is URL se.\n"
+            "Phir se try karne ke liye /create_collection bhejo."
+        )
+        return
+
+    await update.message.reply_text(f"✅ {len(product_urls)} products mile! Collection create ho raha hai...")
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        create_wishlink_collection,
+        product_urls,
+        None
+    )
+
+    if not result:
+        await update.message.reply_text(
+            "❌ Collection create nahi ho saka. Logs check karo.\n"
+            "Phir se try karne ke liye /create_collection bhejo."
+        )
+        return
+
+    collection_link, collection_id, added_count = result
+
+    await update.message.reply_text(
+        f"🎉 Collection Ready!\n\n"
+        f"🔗 {collection_link}\n\n"
+        f"📦 Products added: {added_count}/{len(product_urls)}\n\n"
+        "Agle kaam ke liye:\n/extraction | /create_collection | /single_affiliate"
+    )
+
+
+async def _handle_single_affiliate(update, context, urls):
+    if not urls:
+        await update.message.reply_text("❌ Koi valid URL nahi mila. Dobara bhejo.")
+        return
+
+    context.user_data['state'] = None
+    url = urls[0]
+
+    await update.message.reply_text("🔗 Affiliate link bana raha hoon... ⏳")
+
+    # Wishlink share → redirect
+    if 'wishlink.com' in url and '/share/' in url:
+        url = get_final_url_from_redirect(url) or url
+
+    # Wishlink post/reel/collection → pehla product nikalo
+    if 'wishlink.com' in url and any(t in url for t in ['/post/', '/reels/', '/collection/']):
+        product_urls = get_product_links_from_wishlink_url(url)
+        if not product_urls:
+            await update.message.reply_text(
+                "❌ Product URL extract nahi hua.\n"
+                "Seedha product link bhejo (Amazon, Myntra, etc.)"
+            )
+            return
+        url = product_urls[0]
+
+    loop = asyncio.get_event_loop()
+    affiliate_link = await loop.run_in_executor(
+        None,
+        convert_to_affiliate_link,
+        url
+    )
+
+    if affiliate_link and affiliate_link != url:
+        await update.message.reply_text(
+            f"✅ Affiliate Link Ready!\n\n"
+            f"🔗 {affiliate_link}\n\n"
+            "Agle kaam ke liye:\n/extraction | /create_collection | /single_affiliate"
+        )
+    else:
+        await update.message.reply_text(
+            f"⚠️ Affiliate conversion nahi hua — raw URL:\n{url}\n\n"
+            "Token ya API issue ho sakta hai. Logs check karo."
+        )
+
+
+# ── Main Message Handler (state-aware + legacy fallback) ─────
 
 async def send_links_in_parts(update, all_links, title):
     max_links_per_message = 8
@@ -380,12 +581,16 @@ async def send_links_in_parts(update, all_links, title):
                 output += f"{i}. ({discount}% OFF)\n{link}\n\n"
             await update.message.reply_text(output)
 
+
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Message received from user: {update.effective_user.id}")
     text = update.message.text or update.message.caption
     if not text:
         return
+
     logger.info(f"Processing text: {text}")
+
+    # URLs extract karo
     urls = []
     if update.message.entities:
         for entity in update.message.entities:
@@ -394,8 +599,27 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 urls.append(url)
     if not urls:
         urls = re.findall(r'(https?://\S+)', text)
+
+    # State check karo
+    state = context.user_data.get('state', None)
+
+    # State-based routing
+    if state == 'extraction':
+        await _handle_extraction(update, context, urls)
+        return
+
+    elif state == 'create_collection':
+        await _handle_create_collection(update, context, urls)
+        return
+
+    elif state == 'single_affiliate':
+        await _handle_single_affiliate(update, context, urls)
+        return
+
+    # ── Legacy fallback: koi state nahi, seedha URL aaya ─────
     if not urls:
         return
+
     await update.message.reply_text("Processing your link… 🔄")
     all_links = []
     for url in urls:
@@ -406,15 +630,18 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif "wishlink.com" in url:
             product_links = get_product_links_from_wishlink_url(url)
             all_links.extend(product_links)
+
     if not all_links:
         await update.message.reply_text("❌ No product links found.")
         return
+
     title = random.choice(TITLES)
     try:
         await send_links_in_parts(update, all_links, title)
     except Exception as e:
         logger.error(f"Failed to send response: {e}")
         await update.message.reply_text(f"✅ Found {len(all_links)} product links!")
+
 
 def process_update_in_thread(update_dict):
     global telegram_app, event_loop
@@ -427,7 +654,7 @@ def process_update_in_thread(update_dict):
 
 
 # ============================================================
-# 🌐 Flask App
+# 🌐 Flask App — ALL EXISTING ENDPOINTS UNCHANGED
 # ============================================================
 app = Flask(__name__)
 
@@ -602,25 +829,23 @@ def create_collection_with_singles_api():
         else:
             logger.warning("⚠️ Collection creation failed, sirf singles return karunga")
 
-        # ── COOLDOWN: Collection creation ne API bahut use kiya, rate limit reset hone do ──
+        # ── COOLDOWN ──────────────────────────────────────────
         logger.info("⏳ Waiting 120s for API rate limit to reset before affiliate conversion...")
         time.sleep(120)
 
-        # Step 4: Har product ka individual affiliate link banao (BATCH MODE)
-        # Collection me saare products hain, but individual links sirf max 10
+        # Step 4: Individual affiliate links (max 10)
         MAX_SINGLES = 10
         singles_to_convert = product_urls[:MAX_SINGLES]
         logger.info(f"🔗 Converting {len(singles_to_convert)}/{len(product_urls)} products to individual links (max {MAX_SINGLES})")
 
         BATCH_SIZE = 5
-        COOLDOWN_SECONDS = 120  # 2 min cooldown after every 5
-        GAP_SECONDS = 1         # 1 sec between each conversion
+        COOLDOWN_SECONDS = 120
+        GAP_SECONDS = 1
 
         individual_affiliate_links = []
         for i, prod_url in enumerate(singles_to_convert):
-            # Affiliate conversion with 1 retry
             converted = False
-            for attempt in range(2):  # max 2 attempts (0, 1)
+            for attempt in range(2):
                 try:
                     aff_link = convert_to_affiliate_link(prod_url)
                     if aff_link and aff_link != prod_url:
@@ -641,10 +866,8 @@ def create_collection_with_singles_api():
                 individual_affiliate_links.append(prod_url)
                 logger.warning(f"⚠️ Fallback raw URL for product {i+1}")
 
-            # 1 sec gap between each conversion
             time.sleep(GAP_SECONDS)
 
-            # After every 5th product, 2 minute cooldown (skip if last product)
             if (i + 1) % BATCH_SIZE == 0 and (i + 1) < len(product_urls):
                 logger.info(f"⏳ Batch {(i+1)//BATCH_SIZE} done. Cooling down {COOLDOWN_SECONDS}s...")
                 time.sleep(COOLDOWN_SECONDS)
@@ -693,8 +916,14 @@ def main():
         daemon=True
     )
     loop_thread.start()
+
     telegram_app = ApplicationBuilder().token(TOKEN).build()
+
+    # ── Handlers ──────────────────────────────────────────────
     telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(CommandHandler("extraction", cmd_extraction))                  # NEW
+    telegram_app.add_handler(CommandHandler("create_collection", cmd_create_collection))    # NEW
+    telegram_app.add_handler(CommandHandler("single_affiliate", cmd_single_affiliate))      # NEW
     telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
 
     async def setup_webhook():
