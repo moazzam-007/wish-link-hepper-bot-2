@@ -366,11 +366,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📦 /create_collection\n"
         "Wishlink post/collection URL do → ek affiliate collection link milega\n\n"
         "🔗 /single_affiliate\n"
-        "Koi bhi ek product URL do → ek affiliate Wishlink milega\n"
+        "Koi bhi ek product URL do → ek affiliate Wishlink milega\n\n"
+        "🗂️ /collection_from_links\n"
+        "Apni khud ki 2-20 product links do (ek line mein ek) → affiliate collection ban jayega\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "Kaise use karein:\n"
         "1. Pehle command type karo\n"
-        "2. Phir apni link bhejo\n"
+        "2. Phir apni link(s) bhejo\n"
         "3. Result aayega automatically ✅"
     )
 
@@ -409,6 +411,21 @@ async def cmd_single_affiliate(update: Update, context: ContextTypes.DEFAULT_TYP
         "Example:\n"
         "https://www.amazon.in/dp/XXXXXX\n"
         "ya koi bhi supported product URL"
+    )
+
+
+async def cmd_collection_from_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['state'] = 'collection_from_links'
+    await update.message.reply_text(
+        "🗂️ Collection From Links Mode\n\n"
+        "Ab apni product links bhejo — ek line mein ek link.\n"
+        "Minimum 2, Maximum 20 links de sakte ho.\n\n"
+        "Example:\n"
+        "https://www.amazon.in/dp/XXXXXX\n"
+        "https://www.myntra.com/XXXXXX\n"
+        "https://www.amazon.in/dp/YYYYYY\n"
+        "...\n\n"
+        "⏳ Collection banne mein 3-7 min lag sakte hain — wait karo!"
     )
 
 
@@ -550,13 +567,68 @@ async def _handle_single_affiliate(update, context, urls):
         await update.message.reply_text(
             f"✅ Affiliate Link Ready!\n\n"
             f"🔗 {affiliate_link}\n\n"
-            "Agle kaam ke liye:\n/extraction | /create_collection | /single_affiliate"
+            "Agle kaam ke liye:\n/extraction | /create_collection | /single_affiliate | /collection_from_links"
         )
     else:
         await update.message.reply_text(
             f"⚠️ Affiliate conversion nahi hua — raw URL:\n{url}\n\n"
             "Token ya API issue ho sakta hai. Logs check karo."
         )
+
+
+async def _handle_collection_from_links(update, context, text):
+    # Text se saari URLs extract karo (ek line = ek link)
+    lines = text.strip().splitlines()
+    product_urls = []
+    for line in lines:
+        line = line.strip()
+        if re.match(r'https?://', line):
+            product_urls.append(line)
+
+    if len(product_urls) < 2:
+        await update.message.reply_text(
+            "❌ Kam se kam 2 valid product URLs chahiye.\n"
+            "Ek line mein ek link bhejo.\n\n"
+            "Phir se try karne ke liye /collection_from_links bhejo."
+        )
+        return
+
+    if len(product_urls) > 20:
+        await update.message.reply_text(
+            f"⚠️ {len(product_urls)} links mile — sirf pehli 20 use karunga."
+        )
+        product_urls = product_urls[:20]
+
+    context.user_data['state'] = None
+
+    await update.message.reply_text(
+        f"✅ {len(product_urls)} links mil gayi!\n"
+        "📦 Collection bana raha hoon... 3-7 min lagenge, wait karo ⏳"
+    )
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        create_wishlink_collection,
+        product_urls,
+        None
+    )
+
+    if not result:
+        await update.message.reply_text(
+            "❌ Collection create nahi ho saka. Logs check karo.\n"
+            "Phir se try karne ke liye /collection_from_links bhejo."
+        )
+        return
+
+    collection_link, collection_id, added_count = result
+
+    await update.message.reply_text(
+        f"🎉 Collection Ready!\n\n"
+        f"🔗 {collection_link}\n\n"
+        f"📦 Products added: {added_count}/{len(product_urls)}\n\n"
+        "Agle kaam ke liye:\n/extraction | /create_collection | /single_affiliate | /collection_from_links"
+    )
 
 
 # ── Main Message Handler (state-aware + legacy fallback) ─────
@@ -614,6 +686,10 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif state == 'single_affiliate':
         await _handle_single_affiliate(update, context, urls)
+        return
+
+    elif state == 'collection_from_links':
+        await _handle_collection_from_links(update, context, text)
         return
 
     # ── Legacy fallback: koi state nahi, seedha URL aaya ─────
@@ -924,6 +1000,7 @@ def main():
     telegram_app.add_handler(CommandHandler("extraction", cmd_extraction))                  # NEW
     telegram_app.add_handler(CommandHandler("create_collection", cmd_create_collection))    # NEW
     telegram_app.add_handler(CommandHandler("single_affiliate", cmd_single_affiliate))      # NEW
+    telegram_app.add_handler(CommandHandler("collection_from_links", cmd_collection_from_links))  # NEW
     telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
 
     async def setup_webhook():
