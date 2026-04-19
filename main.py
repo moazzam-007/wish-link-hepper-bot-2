@@ -352,6 +352,170 @@ def create_wishlink_collection(product_urls, collection_name=None):
 
 
 # ============================================================
+# 📸 Wishlink Instagram Post Linker
+# Links a newly posted Instagram post to Wishlink so that
+# anyone who comments "LINK" gets an auto-DM with product links.
+# Flow: createEditShopPost → autoScrapeProduct → finalizeProducts → updatePostOrCollectionStatus
+# ============================================================
+def create_ig_wishlink_post(ig_post_url, product_urls, title=None):
+    """
+    Instagram post ko Wishlink se link karo — auto-DM feature activate karo.
+
+    Args:
+        ig_post_url  (str): Instagram post URL (e.g. https://www.instagram.com/p/XXXX/)
+        product_urls (list): List of original product URLs to tag on the post
+        title        (str): Optional title for the Wishlink post
+
+    Returns:
+        (wishlink_post_url, post_id) tuple on success, or None on failure.
+    """
+    if not ig_post_url:
+        logger.error("[IG-WL] ig_post_url required")
+        return None
+
+    if not product_urls:
+        logger.error("[IG-WL] product_urls list required")
+        return None
+
+    if not title:
+        title = f"Budget Look - {time.strftime('%d %b %Y')}"
+
+    token = get_fresh_wishlink_token()
+    if not token:
+        logger.error("[IG-WL] Auth token unavailable")
+        return None
+
+    headers = get_creator_headers(token)
+
+    # ── Step 1: createEditShopPost ──────────────────────────
+    try:
+        logger.info(f"[IG-WL] Step 1: createEditShopPost | url={ig_post_url}")
+
+        step1_payload = {
+            "link": ig_post_url,
+            "title": title,
+            "post_channel": "instagram",
+            "creator": WISHLINK_CREATOR,
+            "is_placeholder": False,
+            "tags": [],
+            "post_data": {
+                "post_url": ig_post_url,
+                "media_type": "IMAGE",
+                "media_url": "",
+                "thumbnail_url": "",
+                "post_added_on_social_media": "",
+                "post_social_media_id": "",
+                "children": {}
+            }
+        }
+
+        resp = requests.post(
+            "https://api.wishlink.com/api/c/createEditShopPost",
+            headers=headers,
+            json=step1_payload,
+            timeout=30
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        post_id = data.get("post")
+        if not post_id:
+            logger.error(f"[IG-WL] Step 1 failed — post_id nahi mila: {data}")
+            return None
+
+        logger.info(f"[IG-WL] Step 1 done! post_id={post_id}")
+
+    except Exception as e:
+        logger.error(f"[IG-WL] Step 1 exception: {e}")
+        return None
+
+    # ── Step 2: autoScrapeProduct (har product ke liye) ────
+    task_url_pairs = []
+    added_count = 0
+
+    for i, prod_url in enumerate(product_urls):
+        try:
+            logger.info(f"[IG-WL] Step 2: Scraping product {i+1}/{len(product_urls)}: {prod_url[:60]}")
+
+            scrape_resp = requests.post(
+                "https://api.wishlink.com/api/c/autoScrapeProduct",
+                headers=headers,
+                json={"url": prod_url, "creator": WISHLINK_CREATOR},
+                timeout=20
+            )
+            scrape_data = scrape_resp.json()
+
+            task_id = scrape_data.get("data", {}).get("task_id")
+            if task_id:
+                task_url_pairs.append({"task_id": task_id, "url": prod_url})
+                added_count += 1
+                logger.info(f"[IG-WL] Product {i+1} queued | task_id={task_id}")
+            else:
+                logger.warning(f"[IG-WL] Product {i+1} — task_id missing: {scrape_data}")
+
+            time.sleep(1.5)
+
+        except Exception as e:
+            logger.error(f"[IG-WL] Product {i+1} scrape failed: {e}")
+            continue
+
+    logger.info(f"[IG-WL] Step 2 done: {added_count}/{len(product_urls)} products queued")
+
+    # ── Step 3: Wait + finalizeProducts ────────────────────
+    wait_time = max(added_count * 4, 10)
+    logger.info(f"[IG-WL] Step 3: Waiting {wait_time}s for background scraping...")
+    time.sleep(wait_time)
+
+    try:
+        fin_payload = {
+            "postId": str(post_id),
+            "postType": "post",
+            "creator": WISHLINK_CREATOR,
+            "task_url_pairs": task_url_pairs
+        }
+        fin_resp = requests.post(
+            "https://api.wishlink.com/api/c/finalizeProducts",
+            headers=headers,
+            json=fin_payload,
+            timeout=30
+        )
+        logger.info(f"[IG-WL] Step 3 finalize: {fin_resp.status_code} | {fin_resp.text[:150]}")
+
+    except Exception as e:
+        logger.warning(f"[IG-WL] Step 3 warning (non-fatal): {e}")
+
+    # ── Step 4: updatePostOrCollectionStatus (Publish) ─────
+    logger.info("[IG-WL] Step 4: Waiting 10s before publishing...")
+    time.sleep(10)
+
+    try:
+        pub_payload = {
+            "is_alive": True,
+            "is_hidden": False,
+            "postId": str(post_id),
+            "type": "post",
+            "action_type": "publish",
+            "creator": WISHLINK_CREATOR,
+            "cross_post_platforms": None
+        }
+        pub_resp = requests.post(
+            "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
+            headers=headers,
+            json=pub_payload,
+            timeout=20
+        )
+        logger.info(f"[IG-WL] Step 4 publish: {pub_resp.status_code} | {pub_resp.text[:150]}")
+
+    except Exception as e:
+        logger.warning(f"[IG-WL] Step 4 publish warning: {e}")
+
+    # ── Return result ───────────────────────────────────────
+    wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
+    logger.info(f"[IG-WL] All done! Wishlink post LIVE: {wishlink_post_url}")
+    return wishlink_post_url, post_id
+
+
+# ============================================================
 # 📱 Telegram Bot Handlers
 # ============================================================
 
@@ -788,7 +952,7 @@ def get_product_links_api():
             post_id   = match.group(1)
             post_type = 'REELS' if '/reels/' in wishlink_url else 'POST'
 
-        product_links = get_product_links_from_post(post_id)
+        product_links = get_product_links_from_wishlink_url(wishlink_url)
 
         if not product_links:
             return jsonify({
@@ -962,6 +1126,57 @@ def create_collection_with_singles_api():
 
     except Exception as e:
         logger.error(f"create_collection_with_singles API error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
+# ✅ ENDPOINT 4 — Create Wishlink Instagram Post
+# n8n → POST /create-ig-wishlink-post
+# Called after Instagram posting. Links the IG post to Wishlink
+# so Auto-DM feature activates (Comment "LINK" → DM milta hai)
+# ============================================================
+@app.route('/create-ig-wishlink-post', methods=['POST'])
+def create_ig_wishlink_post_api():
+    try:
+        data = request.get_json()
+
+        ig_post_url  = data.get('ig_post_url', '').strip()
+        product_urls = data.get('product_urls', [])
+        title        = data.get('title', '')
+
+        # Validate
+        if not ig_post_url:
+            return jsonify({"success": False, "error": "ig_post_url required"}), 400
+
+        if not isinstance(product_urls, list) or len(product_urls) == 0:
+            return jsonify({"success": False, "error": "product_urls required (non-empty list)"}), 400
+
+        # Wishlink max 10 products per post
+        product_urls = product_urls[:10]
+
+        logger.info(f"[IG-WL] /create-ig-wishlink-post called | url={ig_post_url} | products={len(product_urls)}")
+
+        # ✅ SYNCHRONOUS — n8n timeout is 3 min, this takes ~40-90s (safe)
+        # Same pattern as /create-collection-with-singles which also runs long synchronously
+        result = create_ig_wishlink_post(ig_post_url, product_urls, title or None)
+
+        if not result:
+            logger.error("[IG-WL] create_ig_wishlink_post returned None")
+            return jsonify({"success": False, "error": "Wishlink post creation failed — check server logs"}), 500
+
+        wishlink_post_url, post_id = result
+        logger.info(f"[IG-WL] Done! post_id={post_id} | wishlink_url={wishlink_post_url}")
+
+        return jsonify({
+            "success": True,
+            "wishlink_post_url": wishlink_post_url,
+            "post_id": str(post_id),
+            "ig_post_url": ig_post_url,
+            "products_count": len(product_urls)
+        })
+
+    except Exception as e:
+        logger.error(f"[IG-WL] /create-ig-wishlink-post API error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
