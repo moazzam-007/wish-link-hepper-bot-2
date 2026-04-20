@@ -823,14 +823,18 @@ async def _handle_dm_automation(update, context, text):
 
     for line in lines:
         line = line.strip()
-        if not re.match(r'https?://', line):
+        # re.search — URL kahin bhi ho line mein (handles "1. https://..." format)
+        url_match = re.search(r'https?://\S+', line)
+        if not url_match:
             continue
-        clean = line.split('?')[0].rstrip('/')
-        if 'instagram.com' in line:
+        url = url_match.group(0).rstrip(')')  # trailing ) clean karo
+        clean = url.split('?')[0].rstrip('/')
+        if 'instagram.com' in url:
             if ig_url is None:          # Sirf pehli Instagram URL lo
                 ig_url = clean + '/'
         else:
-            product_urls.append(line)   # Baaki sab product links
+            product_urls.append(url)    # Full URL raho (affiliate params important hain)
+
 
     # ── Validation ──────────────────────────────────────────
     if not ig_url:
