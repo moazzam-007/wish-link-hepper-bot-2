@@ -23,22 +23,19 @@ logger = logging.getLogger(__name__)
 TOKEN                  = os.getenv("BOT_TOKEN")
 WEBHOOK_URL            = os.getenv("WEBHOOK_URL")
 WISHLINK_ID            = os.getenv("WISHLINK_ID", "1752163729058-1dccdb9e-a0f9-f088-a678-e14f8997f719")
-WISHLINK_CREATOR       = os.getenv("WISHLINK_CREATOR", "budget.looks")  # dot wala format
+WISHLINK_CREATOR       = os.getenv("WISHLINK_CREATOR", "budget.looks")
 FIREBASE_API_KEY       = os.getenv("FIREBASE_API_KEY")
 WISHLINK_REFRESH_TOKEN = os.getenv("WISHLINK_REFRESH_TOKEN")
-WISHLINK_BZ_AUTH_KEY   = os.getenv("WISHLINK_BZ_AUTH_KEY")   # _bz_auth_key from browser storage
+WISHLINK_BZ_AUTH_KEY   = os.getenv("WISHLINK_BZ_AUTH_KEY")
 
-# URL path mein same creator name use hota hai
-WISHLINK_CREATOR_URL = WISHLINK_CREATOR  # budget.looks as-is
+WISHLINK_CREATOR_URL = WISHLINK_CREATOR
 
-# Random titles for Telegram bot responses
 TITLES = [
     "🔥 Loot Deal Alert!", "💥 Hot Deal Incoming!", "⚡ Limited Time Offer!",
     "🎯 Grab Fast!", "🚨 Flash Sale!", "💎 Special Deal Just For You!",
     "🛒 Shop Now!", "📢 Price Drop!", "🎉 Mega Offer!", "🤑 Crazy Discount!"
 ]
 
-# Global variables
 telegram_app = None
 event_loop = None
 
@@ -51,12 +48,7 @@ _token_cache = {
 }
 
 def get_fresh_wishlink_token():
-    """
-    Firebase refreshToken se fresh idToken lo.
-    Token memory mein cache hota hai — sirf expire hone pe refresh hoga.
-    """
     global _token_cache
-
     current_time = time.time()
 
     if _token_cache["id_token"] and _token_cache["expires_at"] > current_time + 300:
@@ -353,22 +345,20 @@ def create_wishlink_collection(product_urls, collection_name=None):
 
 # ============================================================
 # 📸 Wishlink Instagram Post Linker
-# Links a newly posted Instagram post to Wishlink so that
-# anyone who comments "LINK" gets an auto-DM with product links.
-# Flow: createEditShopPost → autoScrapeProduct → finalizeProducts → updatePostOrCollectionStatus
+# ✅ FIXED: ig_media_id (numeric), ig_media_url, ig_thumbnail_url
+#    ab properly accept + pass ho rahe hain — thumbnail + Auto-DM fix
 # ============================================================
-def create_ig_wishlink_post(ig_post_url, product_urls, title=None):
-    """
-    Instagram post ko Wishlink se link karo — auto-DM feature activate karo.
-
-    Args:
-        ig_post_url  (str): Instagram post URL (e.g. https://www.instagram.com/p/XXXX/)
-        product_urls (list): List of original product URLs to tag on the post
-        title        (str): Optional title for the Wishlink post
-
-    Returns:
-        (wishlink_post_url, post_id) tuple on success, or None on failure.
-    """
+def create_ig_wishlink_post(
+    ig_post_url,
+    product_urls,
+    title=None,
+    ig_media_id='',        # ✅ numeric Graph API ID (e.g. 17927333469092003)
+    ig_media_type='IMAGE', # ✅ REELS / IMAGE / CAROUSEL_ALBUM
+    ig_media_url='',       # ✅ actual CDN media URL
+    ig_thumbnail_url='',   # ✅ thumbnail URL
+    ig_timestamp='',       # ✅ post timestamp ISO string
+    ig_children=None       # ✅ carousel children (optional)
+):
     if not ig_post_url:
         logger.error("[IG-WL] ig_post_url required")
         return None
@@ -376,6 +366,9 @@ def create_ig_wishlink_post(ig_post_url, product_urls, title=None):
     if not product_urls:
         logger.error("[IG-WL] product_urls list required")
         return None
+
+    if ig_children is None:
+        ig_children = {}
 
     if not title:
         title = f"Budget Look - {time.strftime('%d %b %Y')}"
@@ -387,13 +380,31 @@ def create_ig_wishlink_post(ig_post_url, product_urls, title=None):
 
     headers = get_creator_headers(token)
 
-    # ── Instagram shortcode + media type detect ─────────────
-    # URL: https://www.instagram.com/p/DXWSdntjYRh/  → shortcode = DXWSdntjYRh
-    # URL: https://www.instagram.com/reel/DXWSdntjYRh/ → shortcode = DXWSdntjYRh
-    shortcode_match = re.search(r'/(?:p|reel|tv)/([A-Za-z0-9_-]+)', ig_post_url)
-    ig_shortcode = shortcode_match.group(1) if shortcode_match else ''
-    ig_media_type = 'REEL' if '/reel/' in ig_post_url else 'IMAGE'
-    logger.info(f"[IG-WL] Detected shortcode={ig_shortcode} | media_type={ig_media_type}")
+    # ── media_type normalize karo ───────────────────────────
+    # n8n se 'video' ya 'image' aa sakta hai — Wishlink ko uppercase chahiye
+    media_type_map = {
+        'video': 'REELS',
+        'reel': 'REELS',
+        'reels': 'REELS',
+        'image': 'IMAGE',
+        'carousel': 'CAROUSEL_ALBUM',
+        'carousel_album': 'CAROUSEL_ALBUM',
+    }
+    ig_media_type_normalized = media_type_map.get(
+        ig_media_type.lower(), ig_media_type.upper()
+    )
+
+    # ── Fallback: URL se media type detect karo ─────────────
+    if not ig_media_type or ig_media_type.upper() == 'IMAGE':
+        if '/reel/' in ig_post_url:
+            ig_media_type_normalized = 'REELS'
+
+    logger.info(
+        f"[IG-WL] ig_post_url={ig_post_url} | "
+        f"ig_media_id={ig_media_id} | "
+        f"ig_media_type={ig_media_type_normalized} | "
+        f"ig_media_url={ig_media_url[:60] if ig_media_url else 'EMPTY'}"
+    )
 
     # ── Step 1: createEditShopPost ──────────────────────────
     try:
@@ -408,12 +419,12 @@ def create_ig_wishlink_post(ig_post_url, product_urls, title=None):
             "tags": [],
             "post_data": {
                 "post_url": ig_post_url,
-                "media_type": ig_media_type,       # ✅ REEL or IMAGE based on URL
-                "media_url": "",
-                "thumbnail_url": "",
-                "post_added_on_social_media": "",
-                "post_social_media_id": ig_shortcode,  # ✅ actual Instagram shortcode
-                "children": {}
+                "media_type": ig_media_type_normalized,      # ✅ REELS / IMAGE / CAROUSEL_ALBUM
+                "media_url": ig_media_url,                   # ✅ actual CDN URL
+                "thumbnail_url": ig_thumbnail_url or ig_media_url,  # ✅ fallback to media_url
+                "post_added_on_social_media": ig_timestamp,  # ✅ ISO timestamp
+                "post_social_media_id": ig_media_id,         # ✅ numeric ID — MOST IMPORTANT
+                "children": ig_children
             }
         }
 
@@ -519,7 +530,7 @@ def create_ig_wishlink_post(ig_post_url, product_urls, title=None):
 
     # ── Return result ───────────────────────────────────────
     wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
-    logger.info(f"[IG-WL] All done! Wishlink post LIVE: {wishlink_post_url}")
+    logger.info(f"[IG-WL] ✅ All done! Wishlink post LIVE: {wishlink_post_url}")
     return wishlink_post_url, post_id
 
 
@@ -551,8 +562,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3. Result aayega automatically ✅"
     )
 
-
-# ── NEW: Command Handlers — state set karte hain ─────────────
 
 async def cmd_extraction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['state'] = 'extraction'
@@ -620,8 +629,6 @@ async def cmd_dm_automation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ── NEW: State-based sub-handlers ────────────────────────────
-
 async def _handle_extraction(update, context, urls):
     if not urls:
         await update.message.reply_text("❌ Koi valid URL nahi mila. Dobara bhejo.")
@@ -652,7 +659,6 @@ async def _handle_extraction(update, context, urls):
         )
         return
 
-    # Parts mein bhejo (Telegram 4096 char limit)
     chunk = f"✅ {len(all_links)} Products Mile!\n\n"
     for i, link in enumerate(all_links, 1):
         line = f"{i}. {link}\n\n"
@@ -698,12 +704,7 @@ async def _handle_create_collection(update, context, urls):
     await update.message.reply_text(f"✅ {len(product_urls)} products mile! Collection create ho raha hai...")
 
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        create_wishlink_collection,
-        product_urls,
-        None
-    )
+    result = await loop.run_in_executor(None, create_wishlink_collection, product_urls, None)
 
     if not result:
         await update.message.reply_text(
@@ -732,11 +733,9 @@ async def _handle_single_affiliate(update, context, urls):
 
     await update.message.reply_text("🔗 Affiliate link bana raha hoon... ⏳")
 
-    # Wishlink share → redirect
     if 'wishlink.com' in url and '/share/' in url:
         url = get_final_url_from_redirect(url) or url
 
-    # Wishlink post/reel/collection → pehla product nikalo
     if 'wishlink.com' in url and any(t in url for t in ['/post/', '/reels/', '/collection/']):
         product_urls = get_product_links_from_wishlink_url(url)
         if not product_urls:
@@ -748,11 +747,7 @@ async def _handle_single_affiliate(update, context, urls):
         url = product_urls[0]
 
     loop = asyncio.get_event_loop()
-    affiliate_link = await loop.run_in_executor(
-        None,
-        convert_to_affiliate_link,
-        url
-    )
+    affiliate_link = await loop.run_in_executor(None, convert_to_affiliate_link, url)
 
     if affiliate_link and affiliate_link != url:
         await update.message.reply_text(
@@ -768,7 +763,6 @@ async def _handle_single_affiliate(update, context, urls):
 
 
 async def _handle_collection_from_links(update, context, text):
-    # Text se saari URLs extract karo (ek line = ek link)
     lines = text.strip().splitlines()
     product_urls = []
     for line in lines:
@@ -798,12 +792,7 @@ async def _handle_collection_from_links(update, context, text):
     )
 
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        create_wishlink_collection,
-        product_urls,
-        None
-    )
+    result = await loop.run_in_executor(None, create_wishlink_collection, product_urls, None)
 
     if not result:
         await update.message.reply_text(
@@ -826,25 +815,22 @@ async def _handle_dm_automation(update, context, text):
     """Single message mein IG URL + product links — parse karke Auto-DM activate karo"""
 
     lines = text.strip().splitlines()
-    ig_url      = None
+    ig_url = None
     product_urls = []
 
     for line in lines:
         line = line.strip()
-        # re.search — URL kahin bhi ho line mein (handles "1. https://..." format)
         url_match = re.search(r'https?://\S+', line)
         if not url_match:
             continue
-        url = url_match.group(0).rstrip(')')  # trailing ) clean karo
+        url = url_match.group(0).rstrip(')')
         clean = url.split('?')[0].rstrip('/')
         if 'instagram.com' in url:
-            if ig_url is None:          # Sirf pehli Instagram URL lo
+            if ig_url is None:
                 ig_url = clean + '/'
         else:
-            product_urls.append(url)    # Full URL raho (affiliate params important hain)
+            product_urls.append(url)
 
-
-    # ── Validation ──────────────────────────────────────────
     if not ig_url:
         await update.message.reply_text(
             "❌ Instagram URL nahi mila.\n\n"
@@ -875,7 +861,10 @@ async def _handle_dm_automation(update, context, text):
         f"📸 IG Post: {ig_url}\n"
         f"📦 Products: {len(product_urls)}\n\n"
         f"📲 Wishlink Auto-DM setup ho raha hai...\n"
-        f"⏳ 2-3 min lagenge — please wait karo!"
+        f"⏳ 2-3 min lagenge — please wait karo!\n\n"
+        f"⚠️ Note: Telegram bot se ig_media_id nahi milta,\n"
+        f"isliye thumbnail placeholder aa sakti hai.\n"
+        f"Auto-DM activate hoga ✅"
     )
 
     logger.info(f"[DM-BOT] Starting | ig={ig_url} | products={len(product_urls)}")
@@ -886,6 +875,12 @@ async def _handle_dm_automation(update, context, text):
         create_ig_wishlink_post,
         ig_url,
         product_urls,
+        None,
+        '',   # ig_media_id — bot ke paas nahi hota
+        'IMAGE',
+        '',
+        '',
+        '',
         None
     )
 
@@ -912,8 +907,6 @@ async def _handle_dm_automation(update, context, text):
         "Agle kaam ke liye:\n/dm_automation | /collection_from_links"
     )
 
-
-# ── Main Message Handler (state-aware + legacy fallback) ─────
 
 async def send_links_in_parts(update, all_links, title):
     max_links_per_message = 8
@@ -944,7 +937,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Processing text: {text}")
 
-    # URLs extract karo
     urls = []
     if update.message.entities:
         for entity in update.message.entities:
@@ -954,31 +946,24 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not urls:
         urls = re.findall(r'(https?://\S+)', text)
 
-    # State check karo
     state = context.user_data.get('state', None)
 
-    # State-based routing
     if state == 'extraction':
         await _handle_extraction(update, context, urls)
         return
-
     elif state == 'create_collection':
         await _handle_create_collection(update, context, urls)
         return
-
     elif state == 'single_affiliate':
         await _handle_single_affiliate(update, context, urls)
         return
-
     elif state == 'collection_from_links':
         await _handle_collection_from_links(update, context, text)
         return
-
     elif state == 'dm_automation':
         await _handle_dm_automation(update, context, text)
         return
 
-    # ── Legacy fallback: koi state nahi, seedha URL aaya ─────
     if not urls:
         await update.message.reply_text(
             "👋 Koi URL nahi mila!\n\n"
@@ -991,18 +976,14 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── Smart Auto-Detection ─────────────────────────────────────
-    # Agar ek message mein Instagram URL + product links dono hain
-    # → automatically dm_automation treat karo (state loss fix)
     ig_urls_found      = [u for u in urls if 'instagram.com' in u]
-    product_urls_found = [u for u in urls if 'instagram.com' not in u and 'wishlink.com' not in u]  # ✅ wishlink exclude
+    product_urls_found = [u for u in urls if 'instagram.com' not in u and 'wishlink.com' not in u]
 
     if ig_urls_found and product_urls_found:
         logger.info(f"[AUTO-DM] Smart detect: IG URL + products in one message")
         await _handle_dm_automation(update, context, text)
         return
 
-    # Sirf Instagram URL aayi — user ko guide karo
     if ig_urls_found and not product_urls_found:
         await update.message.reply_text(
             "📸 Instagram URL mila!\n\n"
@@ -1060,7 +1041,7 @@ def process_update_in_thread(update_dict):
 
 
 # ============================================================
-# 🌐 Flask App — ALL EXISTING ENDPOINTS UNCHANGED
+# 🌐 Flask App
 # ============================================================
 app = Flask(__name__)
 
@@ -1121,10 +1102,7 @@ def get_product_links_api():
         product_links = get_product_links_from_wishlink_url(wishlink_url)
 
         if not product_links:
-            return jsonify({
-                "success": False,
-                "error": "Koi product nahi mila"
-            }), 404
+            return jsonify({"success": False, "error": "Koi product nahi mila"}), 404
 
         first_product  = product_links[0]
         affiliate_link = convert_to_affiliate_link(first_product)
@@ -1149,10 +1127,10 @@ def create_collection_api():
     try:
         data = request.get_json()
 
-        product_urls             = data.get('product_urls', [])
-        wishlink_collection_url  = data.get('wishlink_collection_url', '')
-        wishlink_post_url        = data.get('wishlink_post_url', '')
-        collection_name          = data.get('collection_name', '')
+        product_urls            = data.get('product_urls', [])
+        wishlink_collection_url = data.get('wishlink_collection_url', '')
+        wishlink_post_url       = data.get('wishlink_post_url', '')
+        collection_name         = data.get('collection_name', '')
 
         if not product_urls and wishlink_collection_url:
             product_urls = get_product_links_from_wishlink_url(wishlink_collection_url)
@@ -1165,16 +1143,13 @@ def create_collection_api():
         if not product_urls:
             return jsonify({
                 "success": False,
-                "error": "Koi product URL nahi mila. product_urls, wishlink_collection_url, ya wishlink_post_url dena zaroori hai."
+                "error": "Koi product URL nahi mila."
             }), 400
 
         result = create_wishlink_collection(product_urls, collection_name)
 
         if not result:
-            return jsonify({
-                "success": False,
-                "error": "Collection creation failed — logs check karo"
-            }), 500
+            return jsonify({"success": False, "error": "Collection creation failed"}), 500
 
         collection_link, collection_id, added_count = result
 
@@ -1191,10 +1166,6 @@ def create_collection_api():
         return jsonify({"error": str(e)}), 500
 
 
-# ============================================================
-# ✅ ENDPOINT 3 — Collection + Individual Affiliate Links
-# Pinterest CSV ke liye: Pin1=Collection, Pin2+=Individual
-# ============================================================
 @app.route('/create-collection-with-singles', methods=['POST'])
 def create_collection_with_singles_api():
     try:
@@ -1206,23 +1177,17 @@ def create_collection_with_singles_api():
         if not wishlink_url:
             return jsonify({"success": False, "error": "wishlink_url required"}), 400
 
-        # Step 1: Redirect handle karo (share links ke liye)
         if '/share/' in wishlink_url:
             wishlink_url = get_final_url_from_redirect(wishlink_url) or wishlink_url
 
-        # Step 2: Products extract karo
         logger.info(f"📦 Extracting products from: {wishlink_url}")
         product_urls = get_product_links_from_wishlink_url(wishlink_url)
 
         if not product_urls:
-            return jsonify({
-                "success": False,
-                "error": "Koi product nahi mila is URL se"
-            }), 404
+            return jsonify({"success": False, "error": "Koi product nahi mila is URL se"}), 404
 
         logger.info(f"✅ {len(product_urls)} products extracted")
 
-        # Step 3: Collection banao
         result = create_wishlink_collection(product_urls, collection_name)
 
         collection_link = ""
@@ -1235,14 +1200,12 @@ def create_collection_with_singles_api():
         else:
             logger.warning("⚠️ Collection creation failed, sirf singles return karunga")
 
-        # ── COOLDOWN ──────────────────────────────────────────
         logger.info("⏳ Waiting 120s for API rate limit to reset before affiliate conversion...")
         time.sleep(120)
 
-        # Step 4: Individual affiliate links (max 10)
         MAX_SINGLES = 10
         singles_to_convert = product_urls[:MAX_SINGLES]
-        logger.info(f"🔗 Converting {len(singles_to_convert)}/{len(product_urls)} products to individual links (max {MAX_SINGLES})")
+        logger.info(f"🔗 Converting {len(singles_to_convert)} products to individual links")
 
         BATCH_SIZE = 5
         COOLDOWN_SECONDS = 120
@@ -1256,7 +1219,7 @@ def create_collection_with_singles_api():
                     aff_link = convert_to_affiliate_link(prod_url)
                     if aff_link and aff_link != prod_url:
                         individual_affiliate_links.append(aff_link)
-                        logger.info(f"🔗 Affiliate {i+1}/{len(product_urls)}: {aff_link[:60]}")
+                        logger.info(f"🔗 Affiliate {i+1}: {aff_link[:60]}")
                         converted = True
                         break
                     else:
@@ -1278,8 +1241,6 @@ def create_collection_with_singles_api():
                 logger.info(f"⏳ Batch {(i+1)//BATCH_SIZE} done. Cooling down {COOLDOWN_SECONDS}s...")
                 time.sleep(COOLDOWN_SECONDS)
 
-        logger.info(f"✅ Affiliate conversion done: {len([l for l in individual_affiliate_links if 'wishlink.com/share' in l])}/{len(product_urls)} converted")
-
         return jsonify({
             "success": True,
             "collection_link": collection_link,
@@ -1297,34 +1258,50 @@ def create_collection_with_singles_api():
 
 # ============================================================
 # ✅ ENDPOINT 4 — Create Wishlink Instagram Post
-# n8n → POST /create-ig-wishlink-post
-# Called after Instagram posting. Links the IG post to Wishlink
-# so Auto-DM feature activates (Comment "LINK" → DM milta hai)
+# ✅ FIXED: ig_media_id, ig_media_url, ig_thumbnail_url properly handled
 # ============================================================
 @app.route('/create-ig-wishlink-post', methods=['POST'])
 def create_ig_wishlink_post_api():
     try:
         data = request.get_json()
 
-        ig_post_url  = data.get('ig_post_url', '').strip()
-        product_urls = data.get('product_urls', [])
-        title        = data.get('title', '')
+        ig_post_url      = data.get('ig_post_url', '').strip()
+        product_urls     = data.get('product_urls', [])
+        title            = data.get('title', '')
 
-        # Validate
+        # ✅ NEW fields — n8n se aate hain
+        ig_media_id      = data.get('ig_media_id', '')       # numeric Graph API ID
+        ig_media_type    = data.get('ig_media_type', 'IMAGE')
+        ig_media_url     = data.get('ig_media_url', '')
+        ig_thumbnail_url = data.get('ig_thumbnail_url', '')
+        ig_timestamp     = data.get('ig_timestamp', '')
+        ig_children      = data.get('ig_children', {})
+
         if not ig_post_url:
             return jsonify({"success": False, "error": "ig_post_url required"}), 400
 
         if not isinstance(product_urls, list) or len(product_urls) == 0:
             return jsonify({"success": False, "error": "product_urls required (non-empty list)"}), 400
 
-        # Wishlink max 10 products per post
         product_urls = product_urls[:10]
 
-        logger.info(f"[IG-WL] /create-ig-wishlink-post called | url={ig_post_url} | products={len(product_urls)}")
+        logger.info(
+            f"[IG-WL] /create-ig-wishlink-post called | "
+            f"url={ig_post_url} | products={len(product_urls)} | "
+            f"ig_media_id={ig_media_id} | ig_media_type={ig_media_type}"
+        )
 
-        # ✅ SYNCHRONOUS — n8n timeout is 3 min, this takes ~40-90s (safe)
-        # Same pattern as /create-collection-with-singles which also runs long synchronously
-        result = create_ig_wishlink_post(ig_post_url, product_urls, title or None)
+        result = create_ig_wishlink_post(
+            ig_post_url,
+            product_urls,
+            title or None,
+            ig_media_id,
+            ig_media_type,
+            ig_media_url,
+            ig_thumbnail_url,
+            ig_timestamp,
+            ig_children
+        )
 
         if not result:
             logger.error("[IG-WL] create_ig_wishlink_post returned None")
@@ -1376,13 +1353,12 @@ def main():
 
     telegram_app = ApplicationBuilder().token(TOKEN).build()
 
-    # ── Handlers ──────────────────────────────────────────────
     telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(CommandHandler("extraction", cmd_extraction))                  # NEW
-    telegram_app.add_handler(CommandHandler("create_collection", cmd_create_collection))    # NEW
-    telegram_app.add_handler(CommandHandler("single_affiliate", cmd_single_affiliate))      # NEW
-    telegram_app.add_handler(CommandHandler("collection_from_links", cmd_collection_from_links))  # NEW
-    telegram_app.add_handler(CommandHandler("dm_automation", cmd_dm_automation))                  # NEW
+    telegram_app.add_handler(CommandHandler("extraction", cmd_extraction))
+    telegram_app.add_handler(CommandHandler("create_collection", cmd_create_collection))
+    telegram_app.add_handler(CommandHandler("single_affiliate", cmd_single_affiliate))
+    telegram_app.add_handler(CommandHandler("collection_from_links", cmd_collection_from_links))
+    telegram_app.add_handler(CommandHandler("dm_automation", cmd_dm_automation))
     telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
 
     async def setup_webhook():
