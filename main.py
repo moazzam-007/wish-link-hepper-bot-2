@@ -7,6 +7,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import logging
 from flask import Flask, request, jsonify
+from functools import wraps
 import asyncio
 import threading
 
@@ -22,7 +23,17 @@ logger = logging.getLogger(__name__)
 # ============================================================
 TOKEN                  = os.getenv("BOT_TOKEN")
 WEBHOOK_URL            = os.getenv("WEBHOOK_URL")
-WISHLINK_ID            = os.getenv("WISHLINK_ID", "1752163729058-1dccdb9e-a0f9-f088-a678-e14f8997f719")
+
+WEBHOOK_SECRET         = os.getenv("WEBHOOK_SECRET")
+if not WEBHOOK_SECRET:
+    raise ValueError("WEBHOOK_SECRET env var is missing! Required for security.")
+
+API_SECRET_KEY         = os.getenv("API_SECRET_KEY")
+if not API_SECRET_KEY:
+    raise ValueError("API_SECRET_KEY env var is missing! Required to secure private APIs.")
+WISHLINK_ID            = os.getenv("WISHLINK_ID")
+if not WISHLINK_ID:
+    raise ValueError("WISHLINK_ID env var is missing! Required for wishlink API.")
 WISHLINK_CREATOR       = os.getenv("WISHLINK_CREATOR", "budget.looks")
 FIREBASE_API_KEY       = os.getenv("FIREBASE_API_KEY")
 WISHLINK_REFRESH_TOKEN = os.getenv("WISHLINK_REFRESH_TOKEN")
@@ -46,14 +57,16 @@ _token_cache = {
     "id_token": None,
     "expires_at": 0
 }
+_token_lock = threading.Lock()
 
 def get_fresh_wishlink_token():
     global _token_cache
     current_time = time.time()
 
-    if _token_cache["id_token"] and _token_cache["expires_at"] > current_time + 300:
-        logger.info("✅ Cached token valid hai — reuse kar raha hoon")
-        return _token_cache["id_token"]
+    with _token_lock:
+        if _token_cache["id_token"] and _token_cache["expires_at"] > current_time + 300:
+            logger.info("✅ Cached token valid hai — reuse kar raha hoon")
+            return _token_cache["id_token"]
 
     logger.info("🔄 Firebase token refresh kar raha hoon...")
 
@@ -76,10 +89,12 @@ def get_fresh_wishlink_token():
         new_token  = data.get("id_token")
         expires_in = int(data.get("expires_in", 3600))
 
-        _token_cache["id_token"]   = new_token
-        _token_cache["expires_at"] = current_time + expires_in
+        with _token_lock:
+            _token_cache["id_token"]   = new_token
+            _token_cache["expires_at"] = current_time + expires_in
 
-        logger.info(f"✅ Token refresh successful! {expires_in}s valid")
+        # Remove the token logging for security reasons
+        logger.info(f"✅ Token refresh successful! Token is valid for {expires_in}s")
         return new_token
 
     except Exception as e:
@@ -621,15 +636,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔗 /single_affiliate\n"
         "Koi bhi ek product URL do → ek affiliate Wishlink milega\n\n"
         "🗂️ /collection_from_links\n"
-        "Apni khud ki 2-20 product links do (ek line mein ek) → affiliate collection ban jayega\n\n"
+        "Apni khud ki 2-20 product links do → affiliate collection ban jayega\n\n"
         "📲 /dm_automation\n"
-        "Ek message mein bhejo: Instagram URL + product links (ek line ek)\n"
-        "→ Wishlink Auto-DM activate ho jayega (Comment → DM milega)\n"
+        "Instagram URL + product links bhejo → Wishlink Auto-DM activate ho jayega\n\n"
+        "✅ /done\n"
+        "Jab saare links bhej chuke hon processing start karne ke liye isko type karein.\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "Kaise use karein:\n"
         "1. Pehle command type karo\n"
-        "2. Phir apni link(s) bhejo\n"
-        "3. Result aayega automatically ✅"
+        "2. Phir apni link(s) bhejo (ek ya alag-alag messages me)\n"
+        "3. Aakhir me /done bhejo (kuch commands ke liye) ✅"
     )
 
 
@@ -670,33 +686,41 @@ async def cmd_single_affiliate(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def cmd_collection_from_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['state'] = 'collection_from_links'
+    context.user_data['col_product_urls'] = []
     await update.message.reply_text(
         "🗂️ Collection From Links Mode\n\n"
-        "Ab apni product links bhejo — ek line mein ek link.\n"
-        "Minimum 2, Maximum 20 links de sakte ho.\n\n"
-        "Example:\n"
-        "https://www.amazon.in/dp/XXXXXX\n"
-        "https://www.myntra.com/XXXXXX\n"
-        "https://www.amazon.in/dp/YYYYYY\n"
-        "...\n\n"
-        "⏳ Collection banne mein 3-7 min lag sakte hain — wait karo!"
+        "Ab apni product links bhejo (ek message me ya alag-alag messages me).\n"
+        "Minimum 2, Maximum 20 links allowed hain.\n\n"
+        "👉 Jab saari links bhej do, to /done type karna process start karne ke liye!"
     )
 
 
 async def cmd_dm_automation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['state'] = 'dm_automation'
+    context.user_data['dm_ig_url'] = None
+    context.user_data['dm_product_urls'] = []
     await update.message.reply_text(
         "📲 Wishlink Auto-DM Activation Mode\n\n"
-        "Ek hi message mein ye bhejo:\n"
-        "Line 1: Instagram post/reel URL\n"
-        "Line 2+: Product links (ek line mein ek, max 10)\n\n"
-        "Example (copy mat karna, asli links bhejo):\n"
-        "https://www.instagram.com/p/DXWSchgjRh/\n"
-        "https://amzn.in/d/abc123\n"
-        "https://dl.flipkart.com/s/xyz456\n"
-        "https://amzn.in/d/def789\n\n"
-        "⏳ Processing mein 2-3 min lagenge."
+        "Ab mujhe ye links bhejo:\n"
+        "1. Instagram post/reel URL\n"
+        "2. Product links (Amazon, Flipkart, etc. max 10)\n\n"
+        "Aap ek hi message mein sari links de sakte ho ya alag messages mein bhi bhej sakte ho.\n"
+        "👉 Jab sab kuch bhej do, tab /done type karna!"
     )
+
+async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = context.user_data.get('state')
+    
+    if state == 'dm_automation':
+        ig_url = context.user_data.get('dm_ig_url')
+        product_urls = context.user_data.get('dm_product_urls', [])
+        await _execute_dm_automation(update, context, ig_url, product_urls)
+    elif state == 'collection_from_links':
+        product_urls = context.user_data.get('col_product_urls', [])
+        await _execute_collection_from_links(update, context, product_urls)
+    else:
+        await update.message.reply_text("❌ Koi active process nahi hai jisko /done kiya ja sake. Pehle koi command /dm_automation ya /collection_from_links use karein.")
+
 
 
 async def _handle_extraction(update, context, urls):
@@ -834,30 +858,40 @@ async def _handle_single_affiliate(update, context, urls):
 
 async def _handle_collection_from_links(update, context, text):
     lines = text.strip().splitlines()
-    product_urls = []
+    found_urls = []
     for line in lines:
         line = line.strip()
         if re.match(r'https?://', line):
-            product_urls.append(line)
+            found_urls.append(line)
 
+    if found_urls:
+        context.user_data.setdefault('col_product_urls', []).extend(found_urls)
+
+    total_links = len(context.user_data.get('col_product_urls', []))
+    await update.message.reply_text(
+        f"✅ Saved! Naye links: {len(found_urls)} | Total abhi tak: {total_links}\n"
+        "Agar aur links hain toh bhejo, warna /done type karo."
+    )
+
+async def _execute_collection_from_links(update, context, product_urls):
     if len(product_urls) < 2:
         await update.message.reply_text(
             "❌ Kam se kam 2 valid product URLs chahiye.\n"
-            "Ek line mein ek link bhejo.\n\n"
-            "Phir se try karne ke liye /collection_from_links bhejo."
+            "Process cancel ho gaya. Dobara try karne ke liye /collection_from_links bhejo."
         )
+        context.user_data['state'] = None
         return
 
     if len(product_urls) > 20:
         await update.message.reply_text(
-            f"⚠️ {len(product_urls)} links mile — sirf pehli 20 use karunga."
+            f"⚠️ {len(product_urls)} links jama hui hain — sirf pehli 20 use karunga."
         )
         product_urls = product_urls[:20]
 
     context.user_data['state'] = None
 
     await update.message.reply_text(
-        f"✅ {len(product_urls)} links mil gayi!\n"
+        f"✅ {len(product_urls)} links process ho rahi hain!\n"
         "📦 Collection bana raha hoon... 3-7 min lagenge, wait karo ⏳"
     )
 
@@ -886,8 +920,6 @@ async def _handle_collection_from_links(update, context, text):
 # ✅ UPDATED: getInstaPostsList se ig_media_id + thumbnail fetch hota hai
 # ============================================================
 async def _handle_dm_automation(update, context, text):
-    """Single message mein IG URL + product links — parse karke Auto-DM activate karo"""
-
     lines = text.strip().splitlines()
     ig_url = None
     product_urls = []
@@ -905,21 +937,36 @@ async def _handle_dm_automation(update, context, text):
         else:
             product_urls.append(url)
 
+    if ig_url:
+        context.user_data['dm_ig_url'] = ig_url
+    if product_urls:
+        context.user_data.setdefault('dm_product_urls', []).extend(product_urls)
+
+    curr_ig = context.user_data.get('dm_ig_url')
+    curr_prods = context.user_data.get('dm_product_urls', [])
+
+    await update.message.reply_text(
+        f"✅ Saved! Abhi tak mile hain:\n"
+        f"📸 IG Post: {'Mila' if curr_ig else 'Nahi Mila'}\n"
+        f"📦 Products: {len(curr_prods)}\n\n"
+        "Agar aur links hain toh bhejte raho, warna processing start karne ke liye /done type karo."
+    )
+
+async def _execute_dm_automation(update, context, ig_url, product_urls):
     if not ig_url:
         await update.message.reply_text(
-            "❌ Instagram URL nahi mila.\n\n"
-            "Pehli line mein instagram.com/p/XXXXX/ ya instagram.com/reel/XXXXX/ dalna zaroori hai.\n"
-            "Dobara /dm_automation bhejo aur sahi format mein message bhejo."
+            "❌ Instagram URL miss ho gaya.\n\n"
+            "Process cancel. Dobara try karne ke liye /dm_automation bhejo."
         )
+        context.user_data['state'] = None
         return
 
-    if len(product_urls) == 0:
+    if not product_urls or len(product_urls) == 0:
         await update.message.reply_text(
-            f"❌ Koi product URL nahi mila.\n\n"
-            f"Instagram URL mila: {ig_url}\n"
-            "Lekin product links (Amazon, Flipkart, Meesho) nahi mili.\n\n"
-            "Dobara /dm_automation bhejo aur saare links ek saath bhejo."
+            "❌ Koi product URL nahi mila.\n\n"
+            "Process cancel. Dobara try karne ke liye /dm_automation bhejo."
         )
+        context.user_data['state'] = None
         return
 
     if len(product_urls) > 10:
@@ -1075,7 +1122,9 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if ig_urls_found and product_urls_found:
         logger.info(f"[AUTO-DM] Smart detect: IG URL + products in one message")
-        await _handle_dm_automation(update, context, text)
+        # Direct execution for smart detect without requiring /done
+        ig_url = ig_urls_found[0]
+        await _execute_dm_automation(update, context, ig_url, product_urls_found)
         return
 
     if ig_urls_found and not product_urls_found:
@@ -1139,6 +1188,16 @@ def process_update_in_thread(update_dict):
 # ============================================================
 app = Flask(__name__)
 
+def require_api_key(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        key = request.headers.get("Authorization", "").replace("Bearer ", "")
+        if not API_SECRET_KEY or key != API_SECRET_KEY:
+            logger.warning("⚠️ Blocked unauthorized API access attempt")
+            return jsonify({"error": "Unauthorized. Invalid or missing API_SECRET_KEY header."}), 401
+        return f(*args, **kwargs)
+    return decorated
+
 @app.route('/')
 def home():
     return "🤖 Wishlink Bot is running!"
@@ -1153,6 +1212,7 @@ def status():
 
 
 @app.route('/get-product-links', methods=['POST'])
+@require_api_key
 def get_product_links_api():
     try:
         data = request.get_json()
@@ -1185,6 +1245,8 @@ def get_product_links_api():
                 return jsonify({"error": f"Post ID nahi mila: {final_url}"}), 500
             post_id   = match.group(1)
             post_type = 'REELS' if '/reels/' in final_url else 'POST'
+            
+            product_links = get_product_links_from_wishlink_url(final_url)
 
         else:
             match = re.search(r'/(?:post|reels)/(\d+)', wishlink_url)
@@ -1193,7 +1255,7 @@ def get_product_links_api():
             post_id   = match.group(1)
             post_type = 'REELS' if '/reels/' in wishlink_url else 'POST'
 
-        product_links = get_product_links_from_wishlink_url(wishlink_url)
+            product_links = get_product_links_from_wishlink_url(wishlink_url)
 
         if not product_links:
             return jsonify({"success": False, "error": "Koi product nahi mila"}), 404
@@ -1217,6 +1279,7 @@ def get_product_links_api():
 
 
 @app.route('/create-collection', methods=['POST'])
+@require_api_key
 def create_collection_api():
     try:
         data = request.get_json()
@@ -1261,6 +1324,7 @@ def create_collection_api():
 
 
 @app.route('/create-collection-with-singles', methods=['POST'])
+@require_api_key
 def create_collection_with_singles_api():
     try:
         data = request.get_json()
@@ -1355,6 +1419,7 @@ def create_collection_with_singles_api():
 # ✅ FIXED: ig_media_id, ig_media_url, ig_thumbnail_url properly handled
 # ============================================================
 @app.route('/create-ig-wishlink-post', methods=['POST'])
+@require_api_key
 def create_ig_wishlink_post_api():
     try:
         data = request.get_json()
@@ -1416,8 +1481,12 @@ def create_ig_wishlink_post_api():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route(f'/{TOKEN}', methods=['POST'])
+@app.route(f'/{WEBHOOK_SECRET}', methods=['POST'])
 def webhook():
+    if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != WEBHOOK_SECRET:
+        logger.warning("⚠️ Invalid Webhook Request Received (Wrong Secret Token)")
+        return jsonify({"error": "unauthorized"}), 401
+
     try:
         update_dict = request.get_json()
         if update_dict:
@@ -1452,12 +1521,16 @@ def main():
     telegram_app.add_handler(CommandHandler("single_affiliate", cmd_single_affiliate))
     telegram_app.add_handler(CommandHandler("collection_from_links", cmd_collection_from_links))
     telegram_app.add_handler(CommandHandler("dm_automation", cmd_dm_automation))
+    telegram_app.add_handler(CommandHandler("done", cmd_done))
     telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
 
     async def setup_webhook():
         await telegram_app.initialize()
         await telegram_app.start()
-        await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+        await telegram_app.bot.set_webhook(
+            url=f"{WEBHOOK_URL}/{WEBHOOK_SECRET}",
+            secret_token=WEBHOOK_SECRET
+        )
 
     future = asyncio.run_coroutine_threadsafe(setup_webhook(), event_loop)
     future.result()
