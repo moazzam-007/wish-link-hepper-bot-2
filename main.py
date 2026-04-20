@@ -534,8 +534,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗂️ /collection_from_links\n"
         "Apni khud ki 2-20 product links do (ek line mein ek) → affiliate collection ban jayega\n\n"
         "📲 /dm_automation\n"
-        "Kisi bhi Instagram post/reel ka URL do + product links do\n"
-        "→ Wishlink Auto-DM activate ho jayega (Comment 'outfit' → DM milega)\n"
+        "Ek message mein bhejo: Instagram URL + product links (ek line ek)\n"
+        "→ Wishlink Auto-DM activate ho jayega (Comment → DM milega)\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "Kaise use karein:\n"
         "1. Pehle command type karo\n"
@@ -597,17 +597,18 @@ async def cmd_collection_from_links(update: Update, context: ContextTypes.DEFAUL
 
 
 async def cmd_dm_automation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['state'] = 'dm_automation_url'
-    context.user_data['dm_ig_url'] = None
+    context.user_data['state'] = 'dm_automation'
     await update.message.reply_text(
         "📲 Wishlink Auto-DM Activation Mode\n\n"
-        "Step 1/2 — Instagram URL bhejo\n\n"
-        "Apne Instagram post ya reel ka URL bhejo jis par\n"
-        "Auto-DM activate karna hai.\n\n"
-        "Example:\n"
-        "https://www.instagram.com/p/XXXXXX/\n"
-        "ya\n"
-        "https://www.instagram.com/reel/XXXXXX/"
+        "Ek hi message mein ye bhejo:\n"
+        "Line 1: Instagram post/reel URL\n"
+        "Line 2+: Product links (ek line mein ek, max 10)\n\n"
+        "Example (copy mat karna, asli links bhejo):\n"
+        "https://www.instagram.com/p/DXWSchgjRh/\n"
+        "https://amzn.in/d/abc123\n"
+        "https://dl.flipkart.com/s/xyz456\n"
+        "https://amzn.in/d/def789\n\n"
+        "⏳ Processing mein 2-3 min lagenge."
     )
 
 
@@ -813,86 +814,59 @@ async def _handle_collection_from_links(update, context, text):
     )
 
 
-async def _handle_dm_automation_url(update, context, urls):
-    """Step 1: Instagram post URL receive karo"""
-    if not urls:
-        await update.message.reply_text(
-            "❌ Valid Instagram URL nahi mila.\n\n"
-            "instagram.com/p/XXXXX/ ya instagram.com/reel/XXXXX/ format mein bhejo.\n"
-            "Dobara bhejo ya /dm_automation se restart karo."
-        )
-        return
+async def _handle_dm_automation(update, context, text):
+    """Single message mein IG URL + product links — parse karke Auto-DM activate karo"""
 
-    ig_url = urls[0]
-    if 'instagram.com' not in ig_url:
-        await update.message.reply_text(
-            "❌ Ye Instagram URL nahi hai.\n"
-            "instagram.com/p/XXXXX/ format mein bhejo."
-        )
-        return
-
-    # Clean URL — shortcode tak hi raho
-    ig_url = ig_url.split('?')[0].rstrip('/') + '/'
-
-    context.user_data['dm_ig_url'] = ig_url
-    context.user_data['state'] = 'dm_automation_links'
-
-    await update.message.reply_text(
-        f"✅ Instagram URL save ho gaya!\n"
-        f"🔗 {ig_url}\n\n"
-        "Step 2/2 — Ab product links bhejo\n\n"
-        "Ek line mein ek link (max 10):\n"
-        "https://amzn.in/d/XXXXX\n"
-        "https://dl.flipkart.com/s/YYYYY\n"
-        "https://amzn.in/d/ZZZZZ\n"
-        "...\n\n"
-        "⏳ Process hone mein 2-3 min lagenge — wait karo!"
-    )
-
-
-async def _handle_dm_automation_links(update, context, text):
-    """Step 2: Product links receive karo aur Auto-DM activate karo"""
-    ig_url = context.user_data.get('dm_ig_url', '')
-
-    if not ig_url:
-        await update.message.reply_text(
-            "❌ Instagram URL nahi mila. /dm_automation se dobara start karo."
-        )
-        context.user_data['state'] = None
-        return
-
-    # Product links extract karo
     lines = text.strip().splitlines()
+    ig_url      = None
     product_urls = []
+
     for line in lines:
         line = line.strip()
-        if re.match(r'https?://', line) and 'instagram.com' not in line:
-            product_urls.append(line)
+        if not re.match(r'https?://', line):
+            continue
+        clean = line.split('?')[0].rstrip('/')
+        if 'instagram.com' in line:
+            if ig_url is None:          # Sirf pehli Instagram URL lo
+                ig_url = clean + '/'
+        else:
+            product_urls.append(line)   # Baaki sab product links
+
+    # ── Validation ──────────────────────────────────────────
+    if not ig_url:
+        await update.message.reply_text(
+            "❌ Instagram URL nahi mila.\n\n"
+            "Pehli line mein instagram.com/p/XXXXX/ ya instagram.com/reel/XXXXX/ dalna zaroori hai.\n"
+            "Dobara /dm_automation bhejo aur sahi format mein message bhejo."
+        )
+        return
 
     if len(product_urls) == 0:
         await update.message.reply_text(
-            "❌ Koi valid product URL nahi mila.\n"
-            "Amazon, Flipkart, Meesho jaise links bhejo (ek line mein ek).\n\n"
-            "Dobara bhejo ya /dm_automation se restart karo."
+            f"❌ Koi product URL nahi mila.\n\n"
+            f"Instagram URL mila: {ig_url}\n"
+            "Lekin product links (Amazon, Flipkart, Meesho) nahi mili.\n\n"
+            "Dobara /dm_automation bhejo aur saare links ek saath bhejo."
         )
         return
 
     if len(product_urls) > 10:
         await update.message.reply_text(
-            f"⚠️ {len(product_urls)} links mile — sirf pehli 10 use karunga (Wishlink limit)."
+            f"⚠️ {len(product_urls)} product links mile — sirf pehli 10 use karunga (Wishlink limit)."
         )
         product_urls = product_urls[:10]
 
     context.user_data['state'] = None
-    context.user_data['dm_ig_url'] = None
 
     await update.message.reply_text(
-        f"✅ {len(product_urls)} product links mile!\n"
+        f"✅ Sab kuch mil gaya!\n"
+        f"📸 IG Post: {ig_url}\n"
+        f"📦 Products: {len(product_urls)}\n\n"
         f"📲 Wishlink Auto-DM setup ho raha hai...\n"
         f"⏳ 2-3 min lagenge — please wait karo!"
     )
 
-    logger.info(f"[DM-BOT] Starting dm_automation | ig={ig_url} | products={len(product_urls)}")
+    logger.info(f"[DM-BOT] Starting | ig={ig_url} | products={len(product_urls)}")
 
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
@@ -907,7 +881,7 @@ async def _handle_dm_automation_links(update, context, text):
         await update.message.reply_text(
             "❌ Wishlink Auto-DM setup fail ho gaya!\n\n"
             "Possible reasons:\n"
-            "• Instagram URL valid nahi\n"
+            "• Instagram URL sahi nahi\n"
             "• Wishlink API error\n"
             "• Token expire ho gaya\n\n"
             "Dobara try karo ya Render logs check karo."
@@ -921,7 +895,7 @@ async def _handle_dm_automation_links(update, context, text):
         f"📸 Instagram Post:\n{ig_url}\n\n"
         f"🛍️ Wishlink Post:\n{wishlink_post_url}\n\n"
         f"📦 Products Tagged: {len(product_urls)}\n\n"
-        "Ab jab bhi koi 'outfit' comment karega\n"
+        "Ab jab bhi koi comment karega\n"
         "→ Auto-DM mein product links jayengi! 🚀\n\n"
         "Agle kaam ke liye:\n/dm_automation | /collection_from_links"
     )
@@ -988,12 +962,8 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_collection_from_links(update, context, text)
         return
 
-    elif state == 'dm_automation_url':
-        await _handle_dm_automation_url(update, context, urls)
-        return
-
-    elif state == 'dm_automation_links':
-        await _handle_dm_automation_links(update, context, text)
+    elif state == 'dm_automation':
+        await _handle_dm_automation(update, context, text)
         return
 
     # ── Legacy fallback: koi state nahi, seedha URL aaya ─────
