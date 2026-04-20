@@ -387,6 +387,14 @@ def create_ig_wishlink_post(ig_post_url, product_urls, title=None):
 
     headers = get_creator_headers(token)
 
+    # ── Instagram shortcode + media type detect ─────────────
+    # URL: https://www.instagram.com/p/DXWSdntjYRh/  → shortcode = DXWSdntjYRh
+    # URL: https://www.instagram.com/reel/DXWSdntjYRh/ → shortcode = DXWSdntjYRh
+    shortcode_match = re.search(r'/(?:p|reel|tv)/([A-Za-z0-9_-]+)', ig_post_url)
+    ig_shortcode = shortcode_match.group(1) if shortcode_match else ''
+    ig_media_type = 'REEL' if '/reel/' in ig_post_url else 'IMAGE'
+    logger.info(f"[IG-WL] Detected shortcode={ig_shortcode} | media_type={ig_media_type}")
+
     # ── Step 1: createEditShopPost ──────────────────────────
     try:
         logger.info(f"[IG-WL] Step 1: createEditShopPost | url={ig_post_url}")
@@ -400,11 +408,11 @@ def create_ig_wishlink_post(ig_post_url, product_urls, title=None):
             "tags": [],
             "post_data": {
                 "post_url": ig_post_url,
-                "media_type": "IMAGE",
+                "media_type": ig_media_type,       # ✅ REEL or IMAGE based on URL
                 "media_url": "",
                 "thumbnail_url": "",
                 "post_added_on_social_media": "",
-                "post_social_media_id": "",
+                "post_social_media_id": ig_shortcode,  # ✅ actual Instagram shortcode
                 "children": {}
             }
         }
