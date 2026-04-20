@@ -344,6 +344,77 @@ def create_wishlink_collection(product_urls, collection_name=None):
 
 
 # ============================================================
+# 📸 IG Post Data Fetcher via getInstaPostsList
+# ✅ NEW: IG URL se shortcode nikalo, Wishlink API se post data fetch karo
+# ============================================================
+def get_ig_post_data_from_wishlink(ig_url):
+    """
+    IG URL se shortcode nikalo, getInstaPostsList call karo,
+    permalink match karo aur post ka poora data return karo.
+    Posts newest-first aate hain — nayi post page 1 pe hi milegi.
+    """
+    m = re.search(r'instagram\.com/(?:p|reel|reels)/([A-Za-z0-9_-]+)', ig_url)
+    if not m:
+        logger.error(f"[IG-FETCH] Shortcode nahi nikla: {ig_url}")
+        return None
+
+    shortcode = m.group(1)
+    logger.info(f"[IG-FETCH] Shortcode: {shortcode}")
+
+    token = get_fresh_wishlink_token()
+    if not token:
+        logger.error("[IG-FETCH] Token nahi mila")
+        return None
+
+    headers = get_creator_headers(token)
+    cursor = ""
+
+    for page in range(5):  # max 5 pages try karo
+        try:
+            resp = requests.get(
+                "https://api.wishlink.com/api/c/getInstaPostsList",
+                params={
+                    "nextPageCursor": cursor,
+                    "include_stories": "false",
+                    "creator": WISHLINK_CREATOR
+                },
+                headers=headers,
+                timeout=15
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            posts = data.get("data", {}).get("posts", [])
+            for post in posts:
+                permalink = post.get("permalink", "")
+                if shortcode in permalink:
+                    logger.info(f"[IG-FETCH] ✅ Post mila! id={post.get('id')} type={post.get('media_type')}")
+                    return {
+                        "ig_media_id":      post.get("id", ""),
+                        "ig_media_type":    post.get("media_type", "IMAGE"),
+                        "ig_media_url":     post.get("media_url", ""),
+                        "ig_thumbnail_url": post.get("thumbnail_url", "") or post.get("media_url", ""),
+                        "ig_timestamp":     post.get("timestamp", ""),
+                        "ig_children":      post.get("children", {})
+                    }
+
+            # next page check
+            if data.get("data", {}).get("next_page_exists"):
+                cursor = data.get("data", {}).get("next_page_cursor", "")
+                logger.info(f"[IG-FETCH] Page {page+1} done, next page try kar raha hoon...")
+            else:
+                logger.info(f"[IG-FETCH] No more pages after page {page+1}")
+                break
+
+        except Exception as e:
+            logger.error(f"[IG-FETCH] API error page {page+1}: {e}")
+            break
+
+    logger.warning(f"[IG-FETCH] Post nahi mila shortcode={shortcode} — empty data return karunga")
+    return None
+
+
+# ============================================================
 # 📸 Wishlink Instagram Post Linker
 # ✅ FIXED: ig_media_id (numeric), ig_media_url, ig_thumbnail_url
 #    ab properly accept + pass ho rahe hain — thumbnail + Auto-DM fix
@@ -381,7 +452,6 @@ def create_ig_wishlink_post(
     headers = get_creator_headers(token)
 
     # ── media_type normalize karo ───────────────────────────
-    # n8n se 'video' ya 'image' aa sakta hai — Wishlink ko uppercase chahiye
     media_type_map = {
         'video': 'REELS',
         'reel': 'REELS',
@@ -419,11 +489,11 @@ def create_ig_wishlink_post(
             "tags": [],
             "post_data": {
                 "post_url": ig_post_url,
-                "media_type": ig_media_type_normalized,      # ✅ REELS / IMAGE / CAROUSEL_ALBUM
-                "media_url": ig_media_url,                   # ✅ actual CDN URL
-                "thumbnail_url": ig_thumbnail_url or ig_media_url,  # ✅ fallback to media_url
-                "post_added_on_social_media": ig_timestamp,  # ✅ ISO timestamp
-                "post_social_media_id": ig_media_id,         # ✅ numeric ID — MOST IMPORTANT
+                "media_type": ig_media_type_normalized,
+                "media_url": ig_media_url,
+                "thumbnail_url": ig_thumbnail_url or ig_media_url,
+                "post_added_on_social_media": ig_timestamp,
+                "post_social_media_id": ig_media_id,
                 "children": ig_children
             }
         }
@@ -811,6 +881,10 @@ async def _handle_collection_from_links(update, context, text):
     )
 
 
+# ============================================================
+# 📲 DM Automation Handler
+# ✅ UPDATED: getInstaPostsList se ig_media_id + thumbnail fetch hota hai
+# ============================================================
 async def _handle_dm_automation(update, context, text):
     """Single message mein IG URL + product links — parse karke Auto-DM activate karo"""
 
@@ -860,28 +934,48 @@ async def _handle_dm_automation(update, context, text):
         f"✅ Sab kuch mil gaya!\n"
         f"📸 IG Post: {ig_url}\n"
         f"📦 Products: {len(product_urls)}\n\n"
-        f"📲 Wishlink Auto-DM setup ho raha hai...\n"
-        f"⏳ 2-3 min lagenge — please wait karo!\n\n"
-        f"⚠️ Note: Telegram bot se ig_media_id nahi milta,\n"
-        f"isliye thumbnail placeholder aa sakti hai.\n"
-        f"Auto-DM activate hoga ✅"
+        f"🔍 Post data fetch kar raha hoon Wishlink se...\n"
+        f"⏳ 2-3 min lagenge — please wait karo!"
     )
+
+    # ✅ IG post data fetch karo — media_id, thumbnail, type sab milega
+    loop = asyncio.get_event_loop()
+    ig_data = await loop.run_in_executor(None, get_ig_post_data_from_wishlink, ig_url)
+
+    if ig_data:
+        logger.info(f"[DM-BOT] IG data mila: {ig_data['ig_media_id']} | {ig_data['ig_media_type']}")
+        await update.message.reply_text(
+            f"✅ Post data fetch ho gaya!\n"
+            f"🆔 Media ID: {ig_data['ig_media_id']}\n"
+            f"📁 Type: {ig_data['ig_media_type']}\n\n"
+            f"📲 Wishlink Auto-DM setup ho raha hai..."
+        )
+    else:
+        logger.warning("[DM-BOT] IG data nahi mila — empty values se try karunga")
+        await update.message.reply_text(
+            "⚠️ Post data fetch nahi hua — thumbnail placeholder aa sakti hai.\n"
+            "Auto-DM activate karne ki koshish kar raha hoon..."
+        )
+        ig_data = {
+            "ig_media_id": "", "ig_media_type": "IMAGE",
+            "ig_media_url": "", "ig_thumbnail_url": "",
+            "ig_timestamp": "", "ig_children": {}
+        }
 
     logger.info(f"[DM-BOT] Starting | ig={ig_url} | products={len(product_urls)}")
 
-    loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None,
         create_ig_wishlink_post,
         ig_url,
         product_urls,
         None,
-        '',   # ig_media_id — bot ke paas nahi hota
-        'IMAGE',
-        '',
-        '',
-        '',
-        None
+        ig_data["ig_media_id"],
+        ig_data["ig_media_type"],
+        ig_data["ig_media_url"],
+        ig_data["ig_thumbnail_url"],
+        ig_data["ig_timestamp"],
+        ig_data["ig_children"]
     )
 
     if not result:
@@ -1269,8 +1363,7 @@ def create_ig_wishlink_post_api():
         product_urls     = data.get('product_urls', [])
         title            = data.get('title', '')
 
-        # ✅ NEW fields — n8n se aate hain
-        ig_media_id      = data.get('ig_media_id', '')       # numeric Graph API ID
+        ig_media_id      = data.get('ig_media_id', '')
         ig_media_type    = data.get('ig_media_type', 'IMAGE')
         ig_media_url     = data.get('ig_media_url', '')
         ig_thumbnail_url = data.get('ig_thumbnail_url', '')
