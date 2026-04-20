@@ -968,6 +968,38 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Legacy fallback: koi state nahi, seedha URL aaya ─────
     if not urls:
+        await update.message.reply_text(
+            "👋 Koi URL nahi mila!\n\n"
+            "Kya karna chahte ho? Ek command choose karo:\n\n"
+            "🔍 /extraction — Wishlink se product links nikalo\n"
+            "📦 /create_collection — Affiliate collection banao\n"
+            "🔗 /single_affiliate — Ek product link convert karo\n"
+            "🗂️ /collection_from_links — Apni links se collection banao\n"
+            "📲 /dm_automation — Instagram Auto-DM activate karo"
+        )
+        return
+
+    # ── Smart Auto-Detection ─────────────────────────────────────
+    # Agar ek message mein Instagram URL + product links dono hain
+    # → automatically dm_automation treat karo (state loss fix)
+    ig_urls_found      = [u for u in urls if 'instagram.com' in u]
+    product_urls_found = [u for u in urls if 'instagram.com' not in u and 'wishlink.com' not in u]  # ✅ wishlink exclude
+
+    if ig_urls_found and product_urls_found:
+        logger.info(f"[AUTO-DM] Smart detect: IG URL + products in one message")
+        await _handle_dm_automation(update, context, text)
+        return
+
+    # Sirf Instagram URL aayi — user ko guide karo
+    if ig_urls_found and not product_urls_found:
+        await update.message.reply_text(
+            "📸 Instagram URL mila!\n\n"
+            "Lekin product links nahi mili.\n\n"
+            "Wishlink Auto-DM ke liye ek hi message mein bhejo:\n"
+            "Line 1: Instagram URL\n"
+            "Line 2+: Product links (Amazon, Flipkart, etc.)\n\n"
+            "Ya /dm_automation type karo."
+        )
         return
 
     await update.message.reply_text("Processing your link… 🔄")
@@ -982,12 +1014,24 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             all_links.extend(product_links)
 
     if not all_links:
-        await update.message.reply_text("❌ No product links found.")
+        await update.message.reply_text(
+            "🤔 Koi product link nahi mila!\n\n"
+            "Agar Wishlink URL diya tha to sahi format check karo:\n"
+            "wishlink.com/username/post/123456\n\n"
+            "Ya koi command choose karo:\n"
+            "🔍 /extraction | 📦 /create_collection\n"
+            "🔗 /single_affiliate | 🗂️ /collection_from_links\n"
+            "📲 /dm_automation"
+        )
         return
 
     title = random.choice(TITLES)
     try:
         await send_links_in_parts(update, all_links, title)
+        await update.message.reply_text(
+            "💡 Tip: Seedha command use karo next time:\n"
+            "/extraction | /create_collection | /dm_automation"
+        )
     except Exception as e:
         logger.error(f"Failed to send response: {e}")
         await update.message.reply_text(f"✅ Found {len(all_links)} product links!")
