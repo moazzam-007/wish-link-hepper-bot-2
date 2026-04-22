@@ -39,6 +39,10 @@ FIREBASE_API_KEY       = os.getenv("FIREBASE_API_KEY")
 WISHLINK_REFRESH_TOKEN = os.getenv("WISHLINK_REFRESH_TOKEN")
 WISHLINK_BZ_AUTH_KEY   = os.getenv("WISHLINK_BZ_AUTH_KEY")
 
+# ── Facebook Page Credentials (for FB Graph API posting + Wishlink FB DM) ──
+FB_PAGE_ACCESS_TOKEN   = os.getenv("FB_PAGE_ACCESS_TOKEN", "")
+FB_PAGE_ID             = os.getenv("FB_PAGE_ID", "")
+
 WISHLINK_CREATOR_URL = WISHLINK_CREATOR
 
 TITLES = [
@@ -616,6 +620,192 @@ def create_ig_wishlink_post(
     # ── Return result ───────────────────────────────────────
     wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
     logger.info(f"[IG-WL] ✅ All done! Wishlink post LIVE: {wishlink_post_url}")
+    return wishlink_post_url, post_id
+
+
+# ============================================================
+# 📘 Wishlink Facebook Post Linker
+# FB post ke liye Wishlink DM automation activate karo
+# Bilkul create_ig_wishlink_post jaisa — sirf FB specific values
+# ============================================================
+def create_fb_wishlink_post(
+    fb_post_url,
+    product_urls,
+    title=None,
+    fb_post_id='',          # Facebook post numeric ID (e.g. 104552146865_1221075383)
+    fb_media_type='FB_REEL', # FB_REEL ya FB_POST
+    fb_media_url='',         # actual CDN video/image URL
+    fb_thumbnail_url='',     # thumbnail URL
+    fb_timestamp='',         # ISO timestamp
+):
+    if not fb_post_url:
+        logger.error("[FB-WL] fb_post_url required")
+        return None
+
+    if not product_urls:
+        logger.error("[FB-WL] product_urls list required")
+        return None
+
+    if not title:
+        title = f"Budget Look - {time.strftime('%d %b %Y')}"
+
+    token = get_fresh_wishlink_token()
+    if not token:
+        logger.error("[FB-WL] Auth token unavailable")
+        return None
+
+    headers = get_creator_headers(token)
+
+    # ── media_type normalize (FB specific) ──────────────────
+    # Wishlink FB ke liye: FB_REEL ya FB_POST use karta hai
+    media_type_map = {
+        'video':   'FB_REEL',
+        'reel':    'FB_REEL',
+        'fb_reel': 'FB_REEL',
+        'image':   'FB_POST',
+        'photo':   'FB_POST',
+        'fb_post': 'FB_POST',
+    }
+    fb_media_type_normalized = media_type_map.get(
+        fb_media_type.lower(), fb_media_type.upper()
+    )
+
+    # Fallback: URL se detect karo
+    if '/reel/' in fb_post_url and fb_media_type_normalized == 'FB_POST':
+        fb_media_type_normalized = 'FB_REEL'
+
+    logger.info(
+        f"[FB-WL] fb_post_url={fb_post_url} | "
+        f"fb_post_id={fb_post_id} | "
+        f"fb_media_type={fb_media_type_normalized} | "
+        f"fb_media_url={fb_media_url[:60] if fb_media_url else 'EMPTY'}"
+    )
+
+    # ── Step 1: createEditShopPost (Facebook channel) ───────
+    try:
+        logger.info(f"[FB-WL] Step 1: createEditShopPost | url={fb_post_url}")
+
+        step1_payload = {
+            "link":         fb_post_url,
+            "title":        title,
+            "post_channel": "facebook",       # ← yahi Instagram se alag hai
+            "creator":      WISHLINK_CREATOR,
+            "is_placeholder": False,
+            "tags": [],
+            "post_data": {
+                "post_url":                  fb_post_url,
+                "media_type":                fb_media_type_normalized,  # FB_REEL / FB_POST
+                "media_url":                 fb_media_url,
+                "thumbnail_url":             fb_thumbnail_url or fb_media_url,
+                "post_added_on_social_media": fb_timestamp,
+                "post_social_media_id":      fb_post_id,
+                "children": {}
+            }
+        }
+
+        resp = requests.post(
+            "https://api.wishlink.com/api/c/createEditShopPost",
+            headers=headers,
+            json=step1_payload,
+            timeout=30
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        post_id = data.get("post")
+        if not post_id:
+            logger.error(f"[FB-WL] Step 1 failed — post_id nahi mila: {data}")
+            return None
+
+        logger.info(f"[FB-WL] Step 1 done! post_id={post_id}")
+
+    except Exception as e:
+        logger.error(f"[FB-WL] Step 1 exception: {e}")
+        return None
+
+    # ── Step 2: autoScrapeProduct (har product ke liye) ─────
+    task_url_pairs = []
+    added_count = 0
+
+    for i, prod_url in enumerate(product_urls):
+        try:
+            logger.info(f"[FB-WL] Step 2: Scraping product {i+1}/{len(product_urls)}: {prod_url[:60]}")
+
+            scrape_resp = requests.post(
+                "https://api.wishlink.com/api/c/autoScrapeProduct",
+                headers=headers,
+                json={"url": prod_url, "creator": WISHLINK_CREATOR},
+                timeout=20
+            )
+            scrape_data = scrape_resp.json()
+
+            task_id = scrape_data.get("data", {}).get("task_id")
+            if task_id:
+                task_url_pairs.append({"task_id": task_id, "url": prod_url})
+                added_count += 1
+                logger.info(f"[FB-WL] Product {i+1} queued | task_id={task_id}")
+            else:
+                logger.warning(f"[FB-WL] Product {i+1} — task_id missing: {scrape_data}")
+
+            time.sleep(1.5)
+
+        except Exception as e:
+            logger.error(f"[FB-WL] Product {i+1} scrape failed: {e}")
+            continue
+
+    logger.info(f"[FB-WL] Step 2 done: {added_count}/{len(product_urls)} products queued")
+
+    # ── Step 3: Wait + finalizeProducts ─────────────────────
+    wait_time = max(added_count * 4, 10)
+    logger.info(f"[FB-WL] Step 3: Waiting {wait_time}s for background scraping...")
+    time.sleep(wait_time)
+
+    try:
+        fin_payload = {
+            "postId":        str(post_id),
+            "postType":      "post",
+            "creator":       WISHLINK_CREATOR,
+            "task_url_pairs": task_url_pairs
+        }
+        fin_resp = requests.post(
+            "https://api.wishlink.com/api/c/finalizeProducts",
+            headers=headers,
+            json=fin_payload,
+            timeout=30
+        )
+        logger.info(f"[FB-WL] Step 3 finalize: {fin_resp.status_code} | {fin_resp.text[:150]}")
+
+    except Exception as e:
+        logger.warning(f"[FB-WL] Step 3 warning (non-fatal): {e}")
+
+    # ── Step 4: updatePostOrCollectionStatus (Publish) ──────
+    logger.info("[FB-WL] Step 4: Waiting 10s before publishing...")
+    time.sleep(10)
+
+    try:
+        pub_payload = {
+            "is_alive":            True,
+            "is_hidden":           False,
+            "postId":              str(post_id),
+            "type":                "post",
+            "action_type":         "publish",
+            "creator":             WISHLINK_CREATOR,
+            "cross_post_platforms": None
+        }
+        pub_resp = requests.post(
+            "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
+            headers=headers,
+            json=pub_payload,
+            timeout=20
+        )
+        logger.info(f"[FB-WL] Step 4 publish: {pub_resp.status_code} | {pub_resp.text[:150]}")
+
+    except Exception as e:
+        logger.warning(f"[FB-WL] Step 4 publish warning: {e}")
+
+    # ── Return result ────────────────────────────────────────
+    wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
+    logger.info(f"[FB-WL] ✅ All done! Wishlink FB post LIVE: {wishlink_post_url}")
     return wishlink_post_url, post_id
 
 
@@ -1478,6 +1668,72 @@ def create_ig_wishlink_post_api():
 
     except Exception as e:
         logger.error(f"[IG-WL] /create-ig-wishlink-post API error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
+# ✅ ENDPOINT 5 — Create Wishlink Facebook Post
+# n8n FB node se fb_post_url, fb_post_id, product_urls aate hain
+# Wishlink FB DM automation activate karta hai
+# ============================================================
+@app.route('/create-fb-wishlink-post', methods=['POST'])
+@require_api_key
+def create_fb_wishlink_post_api():
+    try:
+        data = request.get_json()
+
+        fb_post_url      = data.get('fb_post_url', '').strip()
+        product_urls     = data.get('product_urls', [])
+        title            = data.get('title', '')
+
+        fb_post_id       = data.get('fb_post_id', '')
+        fb_media_type    = data.get('fb_media_type', 'FB_REEL')
+        fb_media_url     = data.get('fb_media_url', '')
+        fb_thumbnail_url = data.get('fb_thumbnail_url', '')
+        fb_timestamp     = data.get('fb_timestamp', '')
+
+        if not fb_post_url:
+            return jsonify({"success": False, "error": "fb_post_url required"}), 400
+
+        if not isinstance(product_urls, list) or len(product_urls) == 0:
+            return jsonify({"success": False, "error": "product_urls required (non-empty list)"}), 400
+
+        product_urls = product_urls[:10]
+
+        logger.info(
+            f"[FB-WL] /create-fb-wishlink-post called | "
+            f"url={fb_post_url} | products={len(product_urls)} | "
+            f"fb_post_id={fb_post_id} | fb_media_type={fb_media_type}"
+        )
+
+        result = create_fb_wishlink_post(
+            fb_post_url,
+            product_urls,
+            title or None,
+            fb_post_id,
+            fb_media_type,
+            fb_media_url,
+            fb_thumbnail_url,
+            fb_timestamp
+        )
+
+        if not result:
+            logger.error("[FB-WL] create_fb_wishlink_post returned None")
+            return jsonify({"success": False, "error": "Wishlink FB post creation failed — check server logs"}), 500
+
+        wishlink_post_url, post_id = result
+        logger.info(f"[FB-WL] Done! post_id={post_id} | wishlink_url={wishlink_post_url}")
+
+        return jsonify({
+            "success":          True,
+            "wishlink_post_url": wishlink_post_url,
+            "post_id":          str(post_id),
+            "fb_post_url":      fb_post_url,
+            "products_count":   len(product_urls)
+        })
+
+    except Exception as e:
+        logger.error(f"[FB-WL] /create-fb-wishlink-post API error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
