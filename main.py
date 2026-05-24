@@ -3,6 +3,12 @@ import random
 import re
 import time
 import requests
+import hmac
+import hashlib
+import base64
+import json as _json
+from datetime import datetime, timezone
+from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -288,7 +294,138 @@ def get_product_links_from_lehlah_url(lehlah_url):
     logger.warning(f"[Lehlah] Unknown URL format: {lehlah_url}")
     return []
 
+# ============================================================
+# 🛍️ Faym Extraction Helpers (No Playwright — Pure requests)
+# faym.co/post/{id} → Clean Flipkart/Amazon/Myntra/Meesho URLs
+# JWT secret reverse-engineered from faym.co/static/js/main.js
+# ============================================================
+FAYM_SECRET   = "83062d44f574b6007bdbb4fb725dc944d753c1b331ed63232828ab6d16474b6ae81524c1902bc05e78d8af777aa8256e908b85c917bb570bb3e7536bc78b23d0"
+FAYM_CYPHER   = "05aea047511d9073bb7e2fbda489bdca3c0731c429859b4da48fed240d17959922ab2388ad518ef62b2402c27f43214802e496282610e88e37e7b479a497cc47"
+FAYM_API_BASE = "https://backend.faym.co"
+FAYM_HEADERS  = {
+    "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+    "Accept":          "application/json, text/plain, */*",
+    "Origin":          "https://faym.co",
+    "Referer":         "https://faym.co/",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _faym_b64url(data: bytes) -> str:
+    """Base64 URL encode (no padding) — replicates JS yC() function."""
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode()
+
+
+def generate_faym_token() -> str:
+    """
+    Fresh Faym JWT generate karo — replicates AC() from faym.co JS.
+    Token 10 seconds valid (server-side check).
+    """
+    now_ms  = int(time.time() * 1000)
+    exp_ms  = now_ms + 30000  # 30 seconds — Render cold start ke liye safe
+    fmt     = lambda ms: datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.') + f"{ms % 1000:03d}Z"
+    payload = {"cypherCode": FAYM_CYPHER, "expirationTime": fmt(exp_ms), "generationTime": fmt(now_ms)}
+    header  = {"alg": "HS256", "typ": "JWT"}
+    hdr_b64 = _faym_b64url(_json.dumps(header,  separators=(',', ':')).encode())
+    pay_b64 = _faym_b64url(_json.dumps(payload, separators=(',', ':')).encode())
+    message = f"{hdr_b64}.{pay_b64}".encode()
+    sig     = hmac.new(FAYM_SECRET.encode(), message, hashlib.sha256).digest()
+    return f"{hdr_b64}.{pay_b64}.{_faym_b64url(sig)}"
+
+
+def get_faym_content_id(faym_url: str):
+    """faym.co/post/{uuid} se content ID nikalo."""
+    m = re.search(r'/post/([a-zA-Z0-9-]+)', faym_url.split('?')[0])
+    return m.group(1) if m else None
+
+
+def clean_faym_product_url(url: str) -> str:
+    """
+    Faym ke affiliate tracking params hataao → clean original product URL.
+    dl.flipkart.com/dl/... → https://www.flipkart.com/...?pid=PID
+    Amazon / Myntra / Meesho → query params strip
+    """
+    if not url:
+        return url
+    # Flipkart deep link → standard URL
+    if 'dl.flipkart.com/dl/' in url:
+        clean  = url.replace('http://dl.flipkart.com/dl/',  'https://www.flipkart.com/', 1)
+        clean  = clean.replace('https://dl.flipkart.com/dl/', 'https://www.flipkart.com/', 1)
+        parsed = urlparse(clean)
+        params = parse_qs(parsed.query)
+        pid    = params.get('pid', [''])[0]
+        new_q  = f"pid={pid}" if pid else ""
+        return parsed._replace(query=new_q).geturl()
+    # Regular Flipkart URL — sirf pid rakhna
+    if 'flipkart.com' in url:
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        pid    = params.get('pid', [''])[0]
+        new_q  = f"pid={pid}" if pid else ""
+        return parsed._replace(query=new_q).geturl()
+    # Amazon — /dp/ASIN ya /gp/product/ASIN tak
+    if 'amazon.in' in url or 'amazon.com' in url:
+        m = re.search(r'(https?://[^/]*amazon\.[a-z]+/(?:[^/]+/)?(?:dp|gp/product)/[A-Z0-9]+)', url)
+        return m.group(1) if m else url.split('?')[0]
+    # Myntra / Meesho — query strip
+    if 'myntra.com' in url or 'meesho.com' in url:
+        return url.split('?')[0]
+    return url
+
+
+def get_faym_products(faym_url: str) -> list:
+    """
+    Main Faym function — faym.co/post/{id} → clean Flipkart/Amazon product URLs.
+    JWT generate karo → API call → Faym affiliate params hataao → clean URLs return.
+    """
+    content_id = get_faym_content_id(faym_url)
+    if not content_id:
+        logger.warning(f"[Faym] Invalid URL format: {faym_url}")
+        return []
+
+    try:
+        token   = generate_faym_token()
+        headers = dict(FAYM_HEADERS)
+        headers['authorization'] = f'Bearer {token}'
+        api_url = (
+            f"{FAYM_API_BASE}/api/wall/content"
+            f"?contentId={content_id}&offset=0&limit=8&isFirstPost=true&isShort=false&origin=wall"
+        )
+        r    = requests.get(api_url, headers=headers, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        logger.error(f"[Faym] API error: {e}")
+        return []
+
+    posts = data.get('data', {}).get('posts', [])
+    if not posts:
+        logger.warning(f"[Faym] No posts in response for {content_id}")
+        return []
+
+    # Exact post prefer karo, fallback to first
+    matched = [p for p in posts if p.get('id') == content_id]
+    target  = matched[0] if matched else posts[0]
+
+    clean_urls = []
+    for prod in target.get('products', []):
+        meta    = prod.get('metaData', {})
+        resp    = meta.get('response', {})
+        raw_url = resp.get('affiliate_link') or meta.get('url') or ''
+        if raw_url:
+            clean = clean_faym_product_url(raw_url)
+            if clean:
+                clean_urls.append(clean)
+                logger.info(f"[Faym] ✅ {clean[:80]}")
+
+    logger.info(f"[Faym] {content_id}: {len(clean_urls)} clean URLs extracted")
+    return clean_urls
+
+
 def get_product_links_from_wishlink_url(wishlink_url):
+    # ── Faym URL? ────────────────────────────────────────────
+    if "faym.co" in wishlink_url:
+        return get_faym_products(wishlink_url)
     # ── Lehlah URL? Internally handle karo ──────────────────
     if "app.lehlah.club" in wishlink_url:
         return get_product_links_from_lehlah_url(wishlink_url)
@@ -958,7 +1095,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• wishlink.com/username/post/ID\n"
         "• wishlink.com/username/collection/ID\n"
         "• app.lehlah.club/pc/ID  (Lehlah Collection)\n"
-        "• app.lehlah.club/post/ID  (Lehlah Post)\n\n"
+        "• app.lehlah.club/post/ID  (Lehlah Post)\n"
+        "• faym.co/post/ID  (Faym Post) ✨\n\n"
         "Kaise use karein:\n"
         "1. Pehle command type karo\n"
         "2. Phir apni link(s) bhejo (ek ya alag-alag messages me)\n"
@@ -1048,8 +1186,17 @@ async def _handle_extraction(update, context, urls):
     context.user_data['state'] = None
     url = urls[0]
 
+    # ── Faym URL detect karo ─────────────────────────────────
+    if "faym.co" in url:
+        content_id = get_faym_content_id(url)
+        await update.message.reply_text(
+            f"🛍️ Faym Post link detect hua! (ID: {content_id})\n"
+            "⏳ Original product links extract kar raha hoon..."
+        )
+        loop = asyncio.get_running_loop()
+        all_links = await loop.run_in_executor(None, get_faym_products, url)
     # ── Lehlah URL detect karo ───────────────────────────────
-    if "app.lehlah.club" in url:
+    elif "app.lehlah.club" in url:
         link_type, link_id = parse_lehlah_url(url)
         type_str = "Collection" if link_type == "collection" else "Post"
         await update.message.reply_text(
@@ -1105,8 +1252,14 @@ async def _handle_create_collection(update, context, urls):
     context.user_data['state'] = None
     url = urls[0]
 
-    # ── Lehlah vs Wishlink ────────────────────────────────
-    if "app.lehlah.club" in url:
+    # ── Faym / Lehlah / Wishlink detect ─────────────────────
+    if "faym.co" in url:
+        content_id = get_faym_content_id(url)
+        await update.message.reply_text(
+            f"🛍️ Faym Post (ID: {content_id}) se products extract kar raha hoon...\n"
+            "⏳ Phir Wishlink collection banaunga — 2-5 min lagenge!"
+        )
+    elif "app.lehlah.club" in url:
         link_type, link_id = parse_lehlah_url(url)
         type_str = "Collection" if link_type == "collection" else "Post"
         await update.message.reply_text(
@@ -1458,12 +1611,13 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     ig_urls_found      = [u for u in urls if 'instagram.com' in u]
-    # Lehlah URLs ko product URL na samjha jaye — alag se handle hote hain
+    # Wishlink/Lehlah/Faym URLs ko product URL na samjha jaye — alag se handle hote hain
     product_urls_found = [
         u for u in urls
         if 'instagram.com' not in u
         and 'wishlink.com' not in u
         and 'app.lehlah.club' not in u
+        and 'faym.co' not in u
     ]
 
     if ig_urls_found and product_urls_found:
@@ -1491,7 +1645,10 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             redirected = get_final_url_from_redirect(url)
             if redirected:
                 all_links.append(redirected)
-        elif "app.lehlah.club" in url:  # ← Bug fix: Lehlah case add kiya
+        elif "faym.co" in url:
+            product_links = get_faym_products(url)
+            all_links.extend(product_links)
+        elif "app.lehlah.club" in url:
             product_links = get_product_links_from_lehlah_url(url)
             all_links.extend(product_links)
         elif "wishlink.com" in url:
@@ -1680,12 +1837,12 @@ def create_collection_with_singles_api():
     try:
         data = request.get_json()
 
-        # ── Wishlink ya Lehlah URL — dono accept karo ────────
-        wishlink_url    = data.get('wishlink_url', '') or data.get('lehlah_url', '')
+        # ── Wishlink / Lehlah / Faym URL — sab accept karo ──
+        wishlink_url    = data.get('wishlink_url', '') or data.get('lehlah_url', '') or data.get('faym_url', '')
         collection_name = data.get('collection_name', '')
 
         if not wishlink_url:
-            return jsonify({"success": False, "error": "wishlink_url or lehlah_url required"}), 400
+            return jsonify({"success": False, "error": "wishlink_url or lehlah_url or faym_url required"}), 400
 
         if '/share/' in wishlink_url:
             wishlink_url = get_final_url_from_redirect(wishlink_url) or wishlink_url
@@ -1768,6 +1925,47 @@ def extract_lehlah_api():
 
     except Exception as e:
         logger.error(f"[Lehlah API] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
+# 🛍️ ENDPOINT — Extract Faym Products
+# n8n ya koi bhi caller Faym URL bheje → clean product URLs milenge
+# Supports: faym.co/post/{uuid}
+# ============================================================
+@app.route('/extract-faym', methods=['POST'])
+@require_api_key
+def extract_faym_api():
+    try:
+        data      = request.get_json()
+        faym_url  = data.get('faym_url', '').strip()
+
+        if not faym_url:
+            return jsonify({"success": False, "error": "faym_url required"}), 400
+
+        content_id = get_faym_content_id(faym_url)
+        if not content_id:
+            return jsonify({
+                "success": False,
+                "error": "Invalid Faym URL. Use faym.co/post/{id}"
+            }), 400
+
+        logger.info(f"[Faym API] Extracting content_id={content_id} from {faym_url}")
+        product_urls = get_faym_products(faym_url)
+
+        if not product_urls:
+            return jsonify({"success": False, "error": "Koi product nahi mila"}), 404
+
+        logger.info(f"[Faym API] ✅ {len(product_urls)} products extracted")
+        return jsonify({
+            "success":      True,
+            "content_id":   content_id,
+            "product_urls": product_urls,
+            "total":        len(product_urls)
+        })
+
+    except Exception as e:
+        logger.error(f"[Faym API] Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
