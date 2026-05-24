@@ -1710,46 +1710,9 @@ def create_collection_with_singles_api():
         else:
             logger.warning("⚠️ Collection creation failed, sirf singles return karunga")
 
-        logger.info("⏳ Waiting 120s for API rate limit to reset before affiliate conversion...")
-        time.sleep(120)
-
-        MAX_SINGLES = 10
-        singles_to_convert = product_urls[:MAX_SINGLES]
-        logger.info(f"🔗 Converting {len(singles_to_convert)} products to individual links")
-
-        BATCH_SIZE = 5
-        COOLDOWN_SECONDS = 120
-        GAP_SECONDS = 1
-
-        individual_affiliate_links = []
-        for i, prod_url in enumerate(singles_to_convert):
-            converted = False
-            for attempt in range(2):
-                try:
-                    aff_link = convert_to_affiliate_link(prod_url)
-                    if aff_link and aff_link != prod_url:
-                        individual_affiliate_links.append(aff_link)
-                        logger.info(f"🔗 Affiliate {i+1}: {aff_link[:60]}")
-                        converted = True
-                        break
-                    else:
-                        logger.warning(f"⚠️ Affiliate {i+1} raw URL returned, attempt {attempt+1}")
-                        if attempt == 0:
-                            time.sleep(10)
-                except Exception as e:
-                    logger.error(f"⚠️ Affiliate {i+1} attempt {attempt+1} failed: {e}")
-                    if attempt == 0:
-                        time.sleep(10)
-
-            if not converted:
-                individual_affiliate_links.append(prod_url)
-                logger.warning(f"⚠️ Fallback raw URL for product {i+1}")
-
-            time.sleep(GAP_SECONDS)
-
-            if (i + 1) % BATCH_SIZE == 0 and (i + 1) < len(product_urls):
-                logger.info(f"⏳ Batch {(i+1)//BATCH_SIZE} done. Cooling down {COOLDOWN_SECONDS}s...")
-                time.sleep(COOLDOWN_SECONDS)
+        # ⚡ Individual affiliate link creation DISABLED — saves 5-7 min
+        # Collection link hi sufficient hai for all use cases
+        logger.info("✅ Skipping individual affiliate conversion — returning collection link only")
 
         return jsonify({
             "success": True,
@@ -1758,7 +1721,7 @@ def create_collection_with_singles_api():
             "products_added": added_count,
             "total_products": len(product_urls),
             "product_urls": product_urls,
-            "individual_affiliate_links": individual_affiliate_links
+            "individual_affiliate_links": []
         })
 
     except Exception as e:
