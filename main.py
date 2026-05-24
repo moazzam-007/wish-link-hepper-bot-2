@@ -240,7 +240,8 @@ def get_lehlah_post_products(post_id):
         logger.error(f"[Lehlah] Post API error: {e}")
         return []
 
-    # \u2500\u2500 Parallel short_code resolution (3-4x faster than sequential) \u2500\u2500\n    short_codes = [tag.get("short_code", "") for tag in tags if tag.get("short_code", "")]
+    # Parallel short_code resolution (3-4x faster than sequential)
+    short_codes = [tag.get("short_code", "") for tag in tags if tag.get("short_code", "")]
 
     def resolve_short_code(sc):
         try:
