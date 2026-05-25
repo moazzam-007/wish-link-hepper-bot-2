@@ -868,8 +868,9 @@ def create_ig_wishlink_post(
             "postId": str(post_id),
             "type": "post",
             "action_type": "publish",
-            "creator": WISHLINK_CREATOR,
-            "cross_post_platforms": None
+            "cross_post_platforms": ["facebook"],
+            "follow_gate_enabled": False,
+            "creator": WISHLINK_CREATOR
         }
         pub_resp = requests.post(
             "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
@@ -878,9 +879,13 @@ def create_ig_wishlink_post(
             timeout=20
         )
         logger.info(f"[IG-WL] Step 4 publish: {pub_resp.status_code} | {pub_resp.text[:150]}")
-
+        pub_data = pub_resp.json()
+        if not pub_data.get("success", False):
+            logger.error(f"[IG-WL] Step 4 publish failed: {pub_data}")
+            return None
     except Exception as e:
-        logger.warning(f"[IG-WL] Step 4 publish warning: {e}")
+        logger.error(f"[IG-WL] Step 4 publish exception: {e}")
+        return None
 
     # ── Return result ───────────────────────────────────────
     wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
@@ -1061,8 +1066,9 @@ def create_fb_wishlink_post(
             "postId":              str(post_id),
             "type":                "post",
             "action_type":         "publish",
-            "creator":             WISHLINK_CREATOR,
-            "cross_post_platforms": None
+            "cross_post_platforms": ["facebook"],
+            "follow_gate_enabled": False,
+            "creator":             WISHLINK_CREATOR
         }
         pub_resp = requests.post(
             "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
@@ -1071,9 +1077,13 @@ def create_fb_wishlink_post(
             timeout=20
         )
         logger.info(f"[FB-WL] Step 4 publish: {pub_resp.status_code} | {pub_resp.text[:150]}")
-
+        pub_data = pub_resp.json()
+        if not pub_data.get("success", False):
+            logger.error(f"[FB-WL] Step 4 publish failed: {pub_data}")
+            return None
     except Exception as e:
-        logger.warning(f"[FB-WL] Step 4 publish warning: {e}")
+        logger.error(f"[FB-WL] Step 4 publish exception: {e}")
+        return None
 
     # ── Return result ────────────────────────────────────────
     wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
