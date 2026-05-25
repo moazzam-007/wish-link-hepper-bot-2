@@ -1067,6 +1067,49 @@ def create_fb_wishlink_post(
     return wishlink_post_url, post_id
 
 
+def set_custom_dm_message(post_id, custom_message):
+    """
+    Sets a custom DM template message for a Wishlink post ID.
+    Calls POST https://api.wishlink.com/api/c/addShopProducts
+    """
+    logger.info(f"[SET-MSG] Setting custom message on Post ID {post_id}...")
+    token = get_fresh_wishlink_token()
+    if not token:
+        logger.error("[SET-MSG] Fresh token generation failed")
+        return None
+
+    headers = get_creator_headers(token)
+    payload = {
+        "postId": str(post_id),
+        "productLinks": [],
+        "type": "post",
+        "customizationType": "TEXT",
+        "customEngageValues": [
+            {
+                "message": custom_message
+            }
+        ],
+        "creator": WISHLINK_CREATOR
+    }
+
+    try:
+        resp = requests.post(
+            "https://api.wishlink.com/api/c/addShopProducts",
+            headers=headers,
+            json=payload,
+            timeout=20
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        logger.info(f"[SET-MSG] Custom message API response: {data}")
+        if data.get("success", False) or resp.status_code == 200:
+            return True
+        return None
+    except Exception as e:
+        logger.error(f"[SET-MSG] Failed to set custom message: {e}")
+        return None
+
+
 # ============================================================
 # 📱 Telegram Bot Handlers
 # ============================================================
@@ -1993,8 +2036,8 @@ def create_ig_wishlink_post_api():
         if not ig_post_url:
             return jsonify({"success": False, "error": "ig_post_url required"}), 400
 
-        if not isinstance(product_urls, list) or len(product_urls) == 0:
-            return jsonify({"success": False, "error": "product_urls required (non-empty list)"}), 400
+        if not isinstance(product_urls, list):
+            product_urls = []
 
         product_urls = product_urls[:10]
 
@@ -2060,8 +2103,8 @@ def create_fb_wishlink_post_api():
         if not fb_post_url:
             return jsonify({"success": False, "error": "fb_post_url required"}), 400
 
-        if not isinstance(product_urls, list) or len(product_urls) == 0:
-            return jsonify({"success": False, "error": "product_urls required (non-empty list)"}), 400
+        if not isinstance(product_urls, list):
+            product_urls = []
 
         product_urls = product_urls[:10]
 
@@ -2099,6 +2142,45 @@ def create_fb_wishlink_post_api():
 
     except Exception as e:
         logger.error(f"[FB-WL] /create-fb-wishlink-post API error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
+# ✅ ENDPOINT 6 — Set Custom DM Message for Wishlink Post
+# ============================================================
+@app.route('/set-custom-dm-message', methods=['POST'])
+@require_api_key
+def set_custom_dm_message_api():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"success": False, "error": "Request body must be JSON"}), 400
+
+        post_id = data.get('post_id', '')
+        custom_message = data.get('custom_message', '')
+
+        if not post_id or not custom_message:
+            return jsonify({"success": False, "error": "Both 'post_id' and 'custom_message' are required"}), 400
+
+        post_id = str(post_id).strip()
+        custom_message = str(custom_message).strip()
+
+        logger.info(f"[SET-MSG] Route called for post_id={post_id}")
+        result = set_custom_dm_message(post_id, custom_message)
+
+        if result:
+            logger.info(f"[SET-MSG] Successfully set custom message for post_id={post_id}")
+            return jsonify({
+                "success": True,
+                "message": "Custom DM message activated successfully!",
+                "post_id": post_id
+            })
+        else:
+            logger.error(f"[SET-MSG] Failed to set custom message for post_id={post_id}")
+            return jsonify({"success": False, "error": "Wishlink API returned failure status"}), 500
+
+    except Exception as e:
+        logger.error(f"[SET-MSG] /set-custom-dm-message API error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
