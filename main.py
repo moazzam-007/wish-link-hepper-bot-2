@@ -711,9 +711,9 @@ def create_ig_wishlink_post(
         logger.error("[IG-WL] ig_post_url required")
         return None
 
-    if not product_urls:
-        logger.error("[IG-WL] product_urls list required")
-        return None
+    if product_urls is None:
+        product_urls = []
+    logger.info(f"[IG-WL] product_urls count: {len(product_urls)} (0 = Auto-DM only mode)")
 
     if ig_children is None:
         ig_children = {}
@@ -799,60 +799,67 @@ def create_ig_wishlink_post(
     task_url_pairs = []
     added_count = 0
 
-    for i, prod_url in enumerate(product_urls):
-        try:
-            logger.info(f"[IG-WL] Step 2: Scraping product {i+1}/{len(product_urls)}: {prod_url[:60]}")
+    if product_urls:
+        for i, prod_url in enumerate(product_urls):
+            try:
+                logger.info(f"[IG-WL] Step 2: Scraping product {i+1}/{len(product_urls)}: {prod_url[:60]}")
 
-            scrape_resp = requests.post(
-                "https://api.wishlink.com/api/c/autoScrapeProduct",
-                headers=headers,
-                json={"url": prod_url, "creator": WISHLINK_CREATOR},
-                timeout=20
-            )
-            scrape_data = scrape_resp.json()
+                scrape_resp = requests.post(
+                    "https://api.wishlink.com/api/c/autoScrapeProduct",
+                    headers=headers,
+                    json={"url": prod_url, "creator": WISHLINK_CREATOR},
+                    timeout=20
+                )
+                scrape_data = scrape_resp.json()
 
-            task_id = scrape_data.get("data", {}).get("task_id")
-            if task_id:
-                task_url_pairs.append({"task_id": task_id, "url": prod_url})
-                added_count += 1
-                logger.info(f"[IG-WL] Product {i+1} queued | task_id={task_id}")
-            else:
-                logger.warning(f"[IG-WL] Product {i+1} — task_id missing: {scrape_data}")
+                task_id = scrape_data.get("data", {}).get("task_id")
+                if task_id:
+                    task_url_pairs.append({"task_id": task_id, "url": prod_url})
+                    added_count += 1
+                    logger.info(f"[IG-WL] Product {i+1} queued | task_id={task_id}")
+                else:
+                    logger.warning(f"[IG-WL] Product {i+1} — task_id missing: {scrape_data}")
 
-            time.sleep(1.5)
+                time.sleep(1.5)
 
-        except Exception as e:
-            logger.error(f"[IG-WL] Product {i+1} scrape failed: {e}")
-            continue
+            except Exception as e:
+                logger.error(f"[IG-WL] Product {i+1} scrape failed: {e}")
+                continue
 
-    logger.info(f"[IG-WL] Step 2 done: {added_count}/{len(product_urls)} products queued")
+        logger.info(f"[IG-WL] Step 2 done: {added_count}/{len(product_urls)} products queued")
+    else:
+        logger.info("[IG-WL] Step 2 skipped — Auto-DM only mode (no products)")
 
     # ── Step 3: Wait + finalizeProducts ────────────────────
-    wait_time = max(added_count * 4, 10)
-    logger.info(f"[IG-WL] Step 3: Waiting {wait_time}s for background scraping...")
-    time.sleep(wait_time)
+    if task_url_pairs:
+        wait_time = max(added_count * 4, 10)
+        logger.info(f"[IG-WL] Step 3: Waiting {wait_time}s for background scraping...")
+        time.sleep(wait_time)
 
-    try:
-        fin_payload = {
-            "postId": str(post_id),
-            "postType": "post",
-            "creator": WISHLINK_CREATOR,
-            "task_url_pairs": task_url_pairs
-        }
-        fin_resp = requests.post(
-            "https://api.wishlink.com/api/c/finalizeProducts",
-            headers=headers,
-            json=fin_payload,
-            timeout=30
-        )
-        logger.info(f"[IG-WL] Step 3 finalize: {fin_resp.status_code} | {fin_resp.text[:150]}")
+        try:
+            fin_payload = {
+                "postId": str(post_id),
+                "postType": "post",
+                "creator": WISHLINK_CREATOR,
+                "task_url_pairs": task_url_pairs
+            }
+            fin_resp = requests.post(
+                "https://api.wishlink.com/api/c/finalizeProducts",
+                headers=headers,
+                json=fin_payload,
+                timeout=30
+            )
+            logger.info(f"[IG-WL] Step 3 finalize: {fin_resp.status_code} | {fin_resp.text[:150]}")
 
-    except Exception as e:
-        logger.warning(f"[IG-WL] Step 3 warning (non-fatal): {e}")
+        except Exception as e:
+            logger.warning(f"[IG-WL] Step 3 warning (non-fatal): {e}")
+    else:
+        logger.info("[IG-WL] Step 3 skipped — no task_url_pairs to finalize")
 
     # ── Step 4: updatePostOrCollectionStatus (Publish) ─────
-    logger.info("[IG-WL] Step 4: Waiting 10s before publishing...")
-    time.sleep(10)
+    if product_urls:
+        logger.info("[IG-WL] Step 4: Waiting 10s before publishing...")
+        time.sleep(10)
 
     try:
         pub_payload = {
@@ -900,9 +907,9 @@ def create_fb_wishlink_post(
         logger.error("[FB-WL] fb_post_url required")
         return None
 
-    if not product_urls:
-        logger.error("[FB-WL] product_urls list required")
-        return None
+    if product_urls is None:
+        product_urls = []
+    logger.info(f"[FB-WL] product_urls count: {len(product_urls)} (0 = Auto-DM only mode)")
 
     if not title:
         title = f"Budget Look - {time.strftime('%d %b %Y')}"
@@ -985,60 +992,67 @@ def create_fb_wishlink_post(
     task_url_pairs = []
     added_count = 0
 
-    for i, prod_url in enumerate(product_urls):
-        try:
-            logger.info(f"[FB-WL] Step 2: Scraping product {i+1}/{len(product_urls)}: {prod_url[:60]}")
+    if product_urls:
+        for i, prod_url in enumerate(product_urls):
+            try:
+                logger.info(f"[FB-WL] Step 2: Scraping product {i+1}/{len(product_urls)}: {prod_url[:60]}")
 
-            scrape_resp = requests.post(
-                "https://api.wishlink.com/api/c/autoScrapeProduct",
-                headers=headers,
-                json={"url": prod_url, "creator": WISHLINK_CREATOR},
-                timeout=20
-            )
-            scrape_data = scrape_resp.json()
+                scrape_resp = requests.post(
+                    "https://api.wishlink.com/api/c/autoScrapeProduct",
+                    headers=headers,
+                    json={"url": prod_url, "creator": WISHLINK_CREATOR},
+                    timeout=20
+                )
+                scrape_data = scrape_resp.json()
 
-            task_id = scrape_data.get("data", {}).get("task_id")
-            if task_id:
-                task_url_pairs.append({"task_id": task_id, "url": prod_url})
-                added_count += 1
-                logger.info(f"[FB-WL] Product {i+1} queued | task_id={task_id}")
-            else:
-                logger.warning(f"[FB-WL] Product {i+1} — task_id missing: {scrape_data}")
+                task_id = scrape_data.get("data", {}).get("task_id")
+                if task_id:
+                    task_url_pairs.append({"task_id": task_id, "url": prod_url})
+                    added_count += 1
+                    logger.info(f"[FB-WL] Product {i+1} queued | task_id={task_id}")
+                else:
+                    logger.warning(f"[FB-WL] Product {i+1} — task_id missing: {scrape_data}")
 
-            time.sleep(1.5)
+                time.sleep(1.5)
 
-        except Exception as e:
-            logger.error(f"[FB-WL] Product {i+1} scrape failed: {e}")
-            continue
+            except Exception as e:
+                logger.error(f"[FB-WL] Product {i+1} scrape failed: {e}")
+                continue
 
-    logger.info(f"[FB-WL] Step 2 done: {added_count}/{len(product_urls)} products queued")
+        logger.info(f"[FB-WL] Step 2 done: {added_count}/{len(product_urls)} products queued")
+    else:
+        logger.info("[FB-WL] Step 2 skipped — Auto-DM only mode (no products)")
 
     # ── Step 3: Wait + finalizeProducts ─────────────────────
-    wait_time = max(added_count * 4, 10)
-    logger.info(f"[FB-WL] Step 3: Waiting {wait_time}s for background scraping...")
-    time.sleep(wait_time)
+    if task_url_pairs:
+        wait_time = max(added_count * 4, 10)
+        logger.info(f"[FB-WL] Step 3: Waiting {wait_time}s for background scraping...")
+        time.sleep(wait_time)
 
-    try:
-        fin_payload = {
-            "postId":        str(post_id),
-            "postType":      "post",
-            "creator":       WISHLINK_CREATOR,
-            "task_url_pairs": task_url_pairs
-        }
-        fin_resp = requests.post(
-            "https://api.wishlink.com/api/c/finalizeProducts",
-            headers=headers,
-            json=fin_payload,
-            timeout=30
-        )
-        logger.info(f"[FB-WL] Step 3 finalize: {fin_resp.status_code} | {fin_resp.text[:150]}")
+        try:
+            fin_payload = {
+                "postId":        str(post_id),
+                "postType":      "post",
+                "creator":       WISHLINK_CREATOR,
+                "task_url_pairs": task_url_pairs
+            }
+            fin_resp = requests.post(
+                "https://api.wishlink.com/api/c/finalizeProducts",
+                headers=headers,
+                json=fin_payload,
+                timeout=30
+            )
+            logger.info(f"[FB-WL] Step 3 finalize: {fin_resp.status_code} | {fin_resp.text[:150]}")
 
-    except Exception as e:
-        logger.warning(f"[FB-WL] Step 3 warning (non-fatal): {e}")
+        except Exception as e:
+            logger.warning(f"[FB-WL] Step 3 warning (non-fatal): {e}")
+    else:
+        logger.info("[FB-WL] Step 3 skipped — no task_url_pairs to finalize")
 
     # ── Step 4: updatePostOrCollectionStatus (Publish) ──────
-    logger.info("[FB-WL] Step 4: Waiting 10s before publishing...")
-    time.sleep(10)
+    if product_urls:
+        logger.info("[FB-WL] Step 4: Waiting 10s before publishing...")
+        time.sleep(10)
 
     try:
         pub_payload = {
