@@ -960,7 +960,7 @@ def create_ig_wishlink_post(
                 "postId": str(post_id),
                 "type": "post",
                 "action_type": "publish",
-                "cross_post_platforms": ["facebook"],
+                "cross_post_platforms": None,
                 "follow_gate_enabled": False,
                 "creator": WISHLINK_CREATOR
             }
@@ -1237,7 +1237,7 @@ def set_custom_dm_message(post_id, custom_message):
         "postId": str(post_id),
         "type": "post",
         "action_type": "publish",
-        "cross_post_platforms": ["facebook"],
+        "cross_post_platforms": None,
         "follow_gate_enabled": False,
         "creator": WISHLINK_CREATOR
     }
