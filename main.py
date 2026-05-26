@@ -1133,6 +1133,15 @@ def set_custom_dm_message(post_id, custom_message):
         if data.get("success", False) or resp.status_code == 200:
             # Now publish / activate the post on Wishlink
             logger.info(f"[SET-MSG] Custom message set successfully. Activating DM automation/publish for Post ID {post_id}...")
+            
+            # Wait for database consistency propagation
+            logger.info("[SET-MSG] Waiting 8s for Wishlink database consistency...")
+            time.sleep(8)
+            
+            # Defensive measure: Refresh headers with fresh token/session context
+            pub_token = get_fresh_wishlink_token()
+            pub_headers = get_creator_headers(pub_token)
+            
             pub_payload = {
                 "is_alive": True,
                 "is_hidden": False,
@@ -1143,24 +1152,33 @@ def set_custom_dm_message(post_id, custom_message):
                 "follow_gate_enabled": False,
                 "creator": WISHLINK_CREATOR
             }
-            try:
-                pub_resp = requests.post(
-                    "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
-                    headers=headers,
-                    json=pub_payload,
-                    timeout=20
-                )
-                pub_data = pub_resp.json()
-                logger.info(f"[SET-MSG] Activation/Publish response: {pub_data}")
-                if pub_data.get("success", False):
-                    logger.info(f"[SET-MSG] Successfully published/activated Post ID {post_id}")
-                    return True
-                else:
-                    logger.error(f"[SET-MSG] Activation/Publish failed: {pub_data}")
-                    return None
-            except Exception as e:
-                logger.error(f"[SET-MSG] Activation/Publish exception: {e}")
-                return None
+            
+            # Retry loop: up to 3 attempts with 5s wait
+            for attempt in range(3):
+                try:
+                    logger.info(f"[SET-MSG] Publish attempt {attempt + 1}/3...")
+                    pub_resp = requests.post(
+                        "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
+                        headers=pub_headers,
+                        json=pub_payload,
+                        timeout=20
+                    )
+                    pub_data = pub_resp.json()
+                    logger.info(f"[SET-MSG] Activation/Publish response: {pub_data}")
+                    if pub_data.get("success", False):
+                        logger.info(f"[SET-MSG] Successfully published/activated Post ID {post_id}")
+                        return True
+                    else:
+                        logger.warning(f"[SET-MSG] Attempt {attempt + 1} failed: {pub_data}")
+                except Exception as ex:
+                    logger.error(f"[SET-MSG] Attempt {attempt + 1} exception: {ex}")
+                
+                if attempt < 2:
+                    logger.info("[SET-MSG] Retrying in 5 seconds...")
+                    time.sleep(5)
+                    
+            logger.error(f"[SET-MSG] All 3 attempts failed to publish Post ID {post_id}")
+            return None
         return None
     except Exception as e:
         logger.error(f"[SET-MSG] Failed to set custom message: {e}")
