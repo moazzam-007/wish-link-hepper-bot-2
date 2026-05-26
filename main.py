@@ -769,10 +769,10 @@ def create_ig_wishlink_post(
     if ig_children is None:
         ig_children = {}
 
-    # If incoming media_url is empty, try to fetch it
-    if not ig_media_url:
-        logger.info("[IG-WL] Incoming ig_media_url is empty. Attempting to fetch post details...")
-        fetched = fetch_ig_post_details(ig_post_url, ig_media_id)
+    # If incoming media_url is empty or contains "cdninstagram.com", try to force fetch official synced data
+    if not ig_media_url or "cdninstagram.com" in ig_media_url:
+        logger.info("[IG-WL] Incoming ig_media_url is empty or contains 'cdninstagram.com'. Force fetching official synced post data from Wishlink...")
+        fetched = get_ig_post_data_from_wishlink(ig_post_url)
         if fetched:
             if fetched.get("ig_media_id"):
                 ig_media_id = fetched["ig_media_id"]
@@ -1218,7 +1218,7 @@ def set_custom_dm_message(post_id, custom_message):
         resp.raise_for_status()
         data = resp.json()
         logger.info(f"[SET-MSG] addShopProducts response: {data}")
-        if not (data.get("success", False) or resp.status_code == 200):
+        if not data.get("success", False):
             logger.error(f"[SET-MSG] addShopProducts failed: {data}")
             return None
     except Exception as e:
@@ -1252,7 +1252,7 @@ def set_custom_dm_message(post_id, custom_message):
         resp.raise_for_status()
         data = resp.json()
         logger.info(f"[SET-MSG] DM Automation activation response: {data}")
-        if data.get("success", False) or resp.status_code == 200:
+        if data.get("success", False):
             logger.info(f"[SET-MSG] ✅ Custom DM LIVE for post_id={post_id}")
             return True
         else:
