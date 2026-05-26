@@ -1229,7 +1229,31 @@ def set_custom_dm_message(post_id, custom_message):
     logger.info("[SET-MSG] Waiting 5s for DB sync...")
     time.sleep(5)
 
-    # Step 3: Publish / activate DM automation (3 retries, no GCP CDN polling)
+    # Step 3: Check post status and product count BEFORE attempting publish
+    try:
+        check_resp = requests.get(
+            "https://api.wishlink.com/api/c/getShopPostOrCollectionDetails",
+            params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
+            headers=headers,
+            timeout=10
+        )
+        if check_resp.status_code == 200:
+            post_info = check_resp.json().get("data", {}).get("post", {})
+            is_alive = post_info.get("is_alive", False)
+            products = post_info.get("products") or post_info.get("product_count") or []
+            has_products = bool(products)
+
+            if is_alive:
+                logger.info(f"[SET-MSG] ✅ Post already alive — skipping publish. Custom DM LIVE!")
+                return True
+
+            if not has_products:
+                logger.info(f"[SET-MSG] ✅ 0-product post — publish not needed. Custom DM active!")
+                return True
+    except Exception as e:
+        logger.warning(f"[SET-MSG] Pre-publish status check failed (non-fatal): {e}")
+
+    # Step 4: Publish / activate DM automation (3 retries, no GCP CDN polling)
     pub_payload = {
         "is_alive": True,
         "is_hidden": False,
