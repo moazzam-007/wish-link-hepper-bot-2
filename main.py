@@ -1190,10 +1190,6 @@ def create_fb_wishlink_post(
 
 
 def set_custom_dm_message(post_id, custom_message):
-    """
-    Sets a custom DM template message for a Wishlink post ID.
-    Calls POST https://api.wishlink.com/api/c/addShopProducts
-    """
     logger.info(f"[SET-MSG] Setting custom message on Post ID {post_id}...")
     token = get_fresh_wishlink_token()
     if not token:
@@ -1201,16 +1197,14 @@ def set_custom_dm_message(post_id, custom_message):
         return None
 
     headers = get_creator_headers(token)
+
+    # Step 1: Set custom message
     payload = {
         "postId": str(post_id),
         "productLinks": [],
         "type": "post",
         "customizationType": "TEXT",
-        "customEngageValues": [
-            {
-                "message": custom_message
-            }
-        ],
+        "customEngageValues": [{"message": custom_message}],
         "creator": WISHLINK_CREATOR
     }
 
@@ -1223,117 +1217,53 @@ def set_custom_dm_message(post_id, custom_message):
         )
         resp.raise_for_status()
         data = resp.json()
-        logger.info(f"[SET-MSG] Custom message API response: {data}")
-        if data.get("success", False) or resp.status_code == 200:
-            logger.info(f"[SET-MSG] Custom message set. Calling read-barrier GETs to force consistency...")
-            
-            # Read-barrier — same 2 GET calls browser makes before publish
-            try:
-                requests.get(
-                    f"https://api.wishlink.com/api/c/getShopProductsDetails",
-                    params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
-                    headers=headers, timeout=10
-                )
-                requests.get(
-                    f"https://api.wishlink.com/api/c/getShopPostOrCollectionDetails",
-                    params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
-                    headers=headers, timeout=10
-                )
-                logger.info("[SET-MSG] Read-barrier GETs done.")
-            except Exception as e:
-                logger.warning(f"[SET-MSG] Read-barrier GET failed (non-fatal): {e}")
-
-            # Query getShopProductsDetails to see if post has products
-            has_products = True
-            try:
-                prod_resp = requests.get(
-                    f"https://api.wishlink.com/api/c/getShopProductsDetails",
-                    params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
-                    headers=headers, timeout=10
-                )
-                if prod_resp.status_code == 200:
-                    prod_data = prod_resp.json().get("data", [])
-                    if not prod_data:  # Empty list
-                        logger.info(f"[SET-MSG] Post {post_id} has 0 products. Skipping storefront publication step (custom message is already active).")
-                        has_products = False
-            except Exception as e:
-                logger.warning(f"[SET-MSG] Failed to verify product count (non-fatal): {e}")
-
-            if not has_products:
-                logger.info(f"[SET-MSG] Custom message successfully set for 0-product post {post_id}. Done!")
-                return True
-
-            logger.info("[SET-MSG] Polling Wishlink for GCP CDN media URL before publishing...")
-            gcp_ready = False
-            for attempt in range(12):
-                try:
-                    r = requests.get(
-                        "https://api.wishlink.com/api/c/getShopPostOrCollectionDetails",
-                        params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
-                        headers=headers,
-                        timeout=15
-                    )
-                    if r.status_code == 200:
-                        info = r.json().get("data", {}).get("post", {})
-                        thumb = str(info.get("thumbnail_url", ""))
-                        media = str(info.get("media_urls", ""))
-                        if "gcp-cdn.wishlink.com" in thumb or "gcp-cdn.wishlink.com" in media:
-                            logger.info(f"[SET-MSG] GCP CDN ready on attempt {attempt+1}!")
-                            gcp_ready = True
-                            break
-                    logger.info(f"[SET-MSG] GCP CDN not ready yet (attempt {attempt+1}/12). Waiting 10s...")
-                except Exception as e:
-                    logger.warning(f"[SET-MSG] Error checking GCP CDN status (attempt {attempt+1}): {e}")
-                time.sleep(10)
-
-            if not gcp_ready:
-                logger.warning("[SET-MSG] GCP CDN never appeared, proceeding to publish anyway but it might fail.")
-            
-            # Defensive measure: Refresh headers with fresh token/session context
-            pub_token = get_fresh_wishlink_token()
-            pub_headers = get_creator_headers(pub_token)
-            
-            pub_payload = {
-                "is_alive": True,
-                "is_hidden": False,
-                "postId": str(post_id),
-                "type": "post",
-                "action_type": "publish",
-                "cross_post_platforms": ["facebook"],
-                "follow_gate_enabled": False,
-                "creator": WISHLINK_CREATOR
-            }
-            
-            # Retry loop: up to 5 attempts with 15s wait
-            for attempt in range(5):
-                try:
-                    logger.info(f"[SET-MSG] Publish attempt {attempt + 1}/5...")
-                    pub_resp = requests.post(
-                        "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
-                        headers=pub_headers,
-                        json=pub_payload,
-                        timeout=20
-                    )
-                    pub_data = pub_resp.json()
-                    logger.info(f"[SET-MSG] Activation/Publish response: {pub_data}")
-                    if pub_data.get("success", False):
-                        logger.info(f"[SET-MSG] Successfully published/activated Post ID {post_id}")
-                        return True
-                    else:
-                        logger.warning(f"[SET-MSG] Attempt {attempt + 1} failed: {pub_data}")
-                except Exception as ex:
-                    logger.error(f"[SET-MSG] Attempt {attempt + 1} exception: {ex}")
-                
-                if attempt < 4:
-                    logger.info("[SET-MSG] Retrying in 15 seconds...")
-                    time.sleep(15)
-                    
-            logger.error(f"[SET-MSG] All 5 attempts failed to publish Post ID {post_id}")
+        logger.info(f"[SET-MSG] addShopProducts response: {data}")
+        if not (data.get("success", False) or resp.status_code == 200):
+            logger.error(f"[SET-MSG] addShopProducts failed: {data}")
             return None
-        return None
     except Exception as e:
-        logger.error(f"[SET-MSG] Failed to set custom message: {e}")
+        logger.error(f"[SET-MSG] addShopProducts exception: {e}")
         return None
+
+    # Step 2: Short wait for DB sync
+    logger.info("[SET-MSG] Waiting 5s for DB sync...")
+    time.sleep(5)
+
+    # Step 3: Publish / activate DM automation (3 retries, no GCP CDN polling)
+    pub_payload = {
+        "is_alive": True,
+        "is_hidden": False,
+        "postId": str(post_id),
+        "type": "post",
+        "action_type": "publish",
+        "cross_post_platforms": ["facebook"],
+        "follow_gate_enabled": False,
+        "creator": WISHLINK_CREATOR
+    }
+
+    for attempt in range(3):
+        try:
+            logger.info(f"[SET-MSG] Publish attempt {attempt + 1}/3...")
+            pub_resp = requests.post(
+                "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
+                headers=headers,
+                json=pub_payload,
+                timeout=20
+            )
+            pub_resp.raise_for_status()
+            pub_data = pub_resp.json()
+            logger.info(f"[SET-MSG] Publish response: {pub_data}")
+            if pub_data.get("success", False):
+                logger.info(f"[SET-MSG] ✅ Custom DM LIVE for post_id={post_id}")
+                return True
+            logger.warning(f"[SET-MSG] Attempt {attempt + 1} returned success=False: {pub_data}")
+        except Exception as e:
+            logger.error(f"[SET-MSG] Publish attempt {attempt + 1} exception: {e}")
+        if attempt < 2:
+            time.sleep(10)
+
+    logger.error(f"[SET-MSG] All 3 publish attempts failed for post_id={post_id}")
+    return None
 
 
 # ============================================================
