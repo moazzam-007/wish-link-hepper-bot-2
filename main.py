@@ -1243,6 +1243,26 @@ def set_custom_dm_message(post_id, custom_message):
             except Exception as e:
                 logger.warning(f"[SET-MSG] Read-barrier GET failed (non-fatal): {e}")
 
+            # Query getShopProductsDetails to see if post has products
+            has_products = True
+            try:
+                prod_resp = requests.get(
+                    f"https://api.wishlink.com/api/c/getShopProductsDetails",
+                    params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
+                    headers=headers, timeout=10
+                )
+                if prod_resp.status_code == 200:
+                    prod_data = prod_resp.json().get("data", [])
+                    if not prod_data:  # Empty list
+                        logger.info(f"[SET-MSG] Post {post_id} has 0 products. Skipping storefront publication step (custom message is already active).")
+                        has_products = False
+            except Exception as e:
+                logger.warning(f"[SET-MSG] Failed to verify product count (non-fatal): {e}")
+
+            if not has_products:
+                logger.info(f"[SET-MSG] Custom message successfully set for 0-product post {post_id}. Done!")
+                return True
+
             logger.info("[SET-MSG] Polling Wishlink for GCP CDN media URL before publishing...")
             gcp_ready = False
             for attempt in range(12):
