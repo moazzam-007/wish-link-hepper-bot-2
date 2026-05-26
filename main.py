@@ -691,6 +691,57 @@ def get_ig_post_data_from_wishlink(ig_url):
     return None
 
 
+def fetch_ig_post_details(ig_post_url, ig_media_id):
+    """
+    Attempts to fetch Instagram post details (media_url, thumbnail_url, timestamp, type).
+    First tries directly using Facebook Graph API if FB_PAGE_ACCESS_TOKEN and ig_media_id are available.
+    Retries up to 3 times with 3 seconds sleep for replication lag.
+    Falls back to get_ig_post_data_from_wishlink.
+    """
+    if FB_PAGE_ACCESS_TOKEN and ig_media_id:
+        try:
+            logger.info(f"[IG-FETCH] Graph API se fetch kar raha hoon for media ID: {ig_media_id}...")
+            for attempt in range(3):
+                resp = requests.get(
+                    f"https://graph.facebook.com/v22.0/{ig_media_id}",
+                    params={
+                        "fields": "media_url,thumbnail_url,timestamp,media_type,permalink",
+                        "access_token": FB_PAGE_ACCESS_TOKEN
+                    },
+                    timeout=10
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    logger.info(f"[IG-FETCH] Graph API success: {data}")
+                    return {
+                        "ig_media_id": ig_media_id,
+                        "ig_media_type": data.get("media_type", "IMAGE"),
+                        "ig_media_url": data.get("media_url", ""),
+                        "ig_thumbnail_url": data.get("thumbnail_url", "") or data.get("media_url", ""),
+                        "ig_timestamp": data.get("timestamp", ""),
+                        "ig_children": {}
+                    }
+                logger.warning(f"[IG-FETCH] Graph API attempt {attempt+1} failed with status {resp.status_code}: {resp.text}")
+                if attempt < 2:
+                    time.sleep(3)
+        except Exception as e:
+            logger.error(f"[IG-FETCH] Graph API exception: {e}")
+
+    # Fallback to get_ig_post_data_from_wishlink
+    logger.info("[IG-FETCH] Wishlink synced list se fetch karne ki koshish kar raha hoon...")
+    for attempt in range(5):
+        data = get_ig_post_data_from_wishlink(ig_post_url)
+        if data and data.get("ig_media_url"):
+            logger.info(f"[IG-FETCH] Synced list success on attempt {attempt+1}!")
+            return data
+        if attempt < 4:
+            logger.info(f"[IG-FETCH] Synced list attempt {attempt+1} empty. Retrying in 15 seconds...")
+            time.sleep(15)
+
+    logger.warning("[IG-FETCH] Post details fetch completely failed.")
+    return None
+
+
 # ============================================================
 # 📸 Wishlink Instagram Post Linker
 # ✅ FIXED: ig_media_id (numeric), ig_media_url, ig_thumbnail_url
@@ -717,6 +768,24 @@ def create_ig_wishlink_post(
 
     if ig_children is None:
         ig_children = {}
+
+    # If incoming media_url is empty, try to fetch it
+    if not ig_media_url:
+        logger.info("[IG-WL] Incoming ig_media_url is empty. Attempting to fetch post details...")
+        fetched = fetch_ig_post_details(ig_post_url, ig_media_id)
+        if fetched:
+            if fetched.get("ig_media_id"):
+                ig_media_id = fetched["ig_media_id"]
+            if fetched.get("ig_media_type"):
+                ig_media_type = fetched["ig_media_type"]
+            if fetched.get("ig_media_url"):
+                ig_media_url = fetched["ig_media_url"]
+            if fetched.get("ig_thumbnail_url"):
+                ig_thumbnail_url = fetched["ig_thumbnail_url"]
+            if fetched.get("ig_timestamp"):
+                ig_timestamp = fetched["ig_timestamp"]
+            if fetched.get("ig_children"):
+                ig_children = fetched["ig_children"]
 
     if not title:
         title = f"Budget Look - {time.strftime('%d %b %Y')}"
@@ -858,8 +927,31 @@ def create_ig_wishlink_post(
 
     # ── Step 4: updatePostOrCollectionStatus (Publish) ─────
     if product_urls:
-        logger.info("[IG-WL] Step 4: Waiting 10s before publishing...")
-        time.sleep(10)
+        logger.info("[IG-WL] Step 4: Polling Wishlink for GCP CDN media URL before publishing...")
+        gcp_ready = False
+        for attempt in range(10):
+            try:
+                r = requests.get(
+                    "https://api.wishlink.com/api/c/getShopPostOrCollectionDetails",
+                    params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
+                    headers=headers,
+                    timeout=15
+                )
+                if r.status_code == 200:
+                    info = r.json().get("data", {}).get("post", {})
+                    thumb = str(info.get("thumbnail_url", ""))
+                    media = str(info.get("media_urls", ""))
+                    if "gcp-cdn.wishlink.com" in thumb or "gcp-cdn.wishlink.com" in media:
+                        logger.info(f"[IG-WL] GCP CDN ready on attempt {attempt+1}!")
+                        gcp_ready = True
+                        break
+                logger.info(f"[IG-WL] GCP CDN not ready yet (attempt {attempt+1}/10). Waiting 15s...")
+            except Exception as e:
+                logger.warning(f"[IG-WL] Error checking GCP CDN status (attempt {attempt+1}): {e}")
+            time.sleep(15)
+
+        if not gcp_ready:
+            logger.warning("[IG-WL] GCP CDN never appeared, proceeding to publish anyway but it might fail.")
 
         try:
             pub_payload = {
@@ -1151,8 +1243,31 @@ def set_custom_dm_message(post_id, custom_message):
             except Exception as e:
                 logger.warning(f"[SET-MSG] Read-barrier GET failed (non-fatal): {e}")
 
-            logger.info("[SET-MSG] Waiting 30s before publish attempt (giving Wishlink time to fully process media)...")
-            time.sleep(30)  # Allow Wishlink to finish GCP CDN media download before publish
+            logger.info("[SET-MSG] Polling Wishlink for GCP CDN media URL before publishing...")
+            gcp_ready = False
+            for attempt in range(12):
+                try:
+                    r = requests.get(
+                        "https://api.wishlink.com/api/c/getShopPostOrCollectionDetails",
+                        params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
+                        headers=headers,
+                        timeout=15
+                    )
+                    if r.status_code == 200:
+                        info = r.json().get("data", {}).get("post", {})
+                        thumb = str(info.get("thumbnail_url", ""))
+                        media = str(info.get("media_urls", ""))
+                        if "gcp-cdn.wishlink.com" in thumb or "gcp-cdn.wishlink.com" in media:
+                            logger.info(f"[SET-MSG] GCP CDN ready on attempt {attempt+1}!")
+                            gcp_ready = True
+                            break
+                    logger.info(f"[SET-MSG] GCP CDN not ready yet (attempt {attempt+1}/12). Waiting 10s...")
+                except Exception as e:
+                    logger.warning(f"[SET-MSG] Error checking GCP CDN status (attempt {attempt+1}): {e}")
+                time.sleep(10)
+
+            if not gcp_ready:
+                logger.warning("[SET-MSG] GCP CDN never appeared, proceeding to publish anyway but it might fail.")
             
             # Defensive measure: Refresh headers with fresh token/session context
             pub_token = get_fresh_wishlink_token()
