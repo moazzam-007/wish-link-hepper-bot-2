@@ -861,31 +861,33 @@ def create_ig_wishlink_post(
         logger.info("[IG-WL] Step 4: Waiting 10s before publishing...")
         time.sleep(10)
 
-    try:
-        pub_payload = {
-            "is_alive": True,
-            "is_hidden": False,
-            "postId": str(post_id),
-            "type": "post",
-            "action_type": "publish",
-            "cross_post_platforms": ["facebook"],
-            "follow_gate_enabled": False,
-            "creator": WISHLINK_CREATOR
-        }
-        pub_resp = requests.post(
-            "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
-            headers=headers,
-            json=pub_payload,
-            timeout=20
-        )
-        logger.info(f"[IG-WL] Step 4 publish: {pub_resp.status_code} | {pub_resp.text[:150]}")
-        pub_data = pub_resp.json()
-        if not pub_data.get("success", False):
-            logger.error(f"[IG-WL] Step 4 publish failed: {pub_data}")
+        try:
+            pub_payload = {
+                "is_alive": True,
+                "is_hidden": False,
+                "postId": str(post_id),
+                "type": "post",
+                "action_type": "publish",
+                "cross_post_platforms": ["facebook"],
+                "follow_gate_enabled": False,
+                "creator": WISHLINK_CREATOR
+            }
+            pub_resp = requests.post(
+                "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
+                headers=headers,
+                json=pub_payload,
+                timeout=20
+            )
+            logger.info(f"[IG-WL] Step 4 publish: {pub_resp.status_code} | {pub_resp.text[:150]}")
+            pub_data = pub_resp.json()
+            if not pub_data.get("success", False):
+                logger.error(f"[IG-WL] Step 4 publish failed: {pub_data}")
+                return None
+        except Exception as e:
+            logger.error(f"[IG-WL] Step 4 publish exception: {e}")
             return None
-    except Exception as e:
-        logger.error(f"[IG-WL] Step 4 publish exception: {e}")
-        return None
+    else:
+        logger.info("[IG-WL] Step 4 skipped (0 products) — Will be published during custom message setup")
 
     # ── Return result ───────────────────────────────────────
     wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
@@ -1059,31 +1061,33 @@ def create_fb_wishlink_post(
         logger.info("[FB-WL] Step 4: Waiting 10s before publishing...")
         time.sleep(10)
 
-    try:
-        pub_payload = {
-            "is_alive":            True,
-            "is_hidden":           False,
-            "postId":              str(post_id),
-            "type":                "post",
-            "action_type":         "publish",
-            "cross_post_platforms": ["facebook"],
-            "follow_gate_enabled": False,
-            "creator":             WISHLINK_CREATOR
-        }
-        pub_resp = requests.post(
-            "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
-            headers=headers,
-            json=pub_payload,
-            timeout=20
-        )
-        logger.info(f"[FB-WL] Step 4 publish: {pub_resp.status_code} | {pub_resp.text[:150]}")
-        pub_data = pub_resp.json()
-        if not pub_data.get("success", False):
-            logger.error(f"[FB-WL] Step 4 publish failed: {pub_data}")
+        try:
+            pub_payload = {
+                "is_alive":            True,
+                "is_hidden":           False,
+                "postId":              str(post_id),
+                "type":                "post",
+                "action_type":         "publish",
+                "cross_post_platforms": ["facebook"],
+                "follow_gate_enabled": False,
+                "creator":             WISHLINK_CREATOR
+            }
+            pub_resp = requests.post(
+                "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
+                headers=headers,
+                json=pub_payload,
+                timeout=20
+            )
+            logger.info(f"[FB-WL] Step 4 publish: {pub_resp.status_code} | {pub_resp.text[:150]}")
+            pub_data = pub_resp.json()
+            if not pub_data.get("success", False):
+                logger.error(f"[FB-WL] Step 4 publish failed: {pub_data}")
+                return None
+        except Exception as e:
+            logger.error(f"[FB-WL] Step 4 publish exception: {e}")
             return None
-    except Exception as e:
-        logger.error(f"[FB-WL] Step 4 publish exception: {e}")
-        return None
+    else:
+        logger.info("[FB-WL] Step 4 skipped (0 products) — Will be published during custom message setup")
 
     # ── Return result ────────────────────────────────────────
     wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
@@ -1127,7 +1131,36 @@ def set_custom_dm_message(post_id, custom_message):
         data = resp.json()
         logger.info(f"[SET-MSG] Custom message API response: {data}")
         if data.get("success", False) or resp.status_code == 200:
-            return True
+            # Now publish / activate the post on Wishlink
+            logger.info(f"[SET-MSG] Custom message set successfully. Activating DM automation/publish for Post ID {post_id}...")
+            pub_payload = {
+                "is_alive": True,
+                "is_hidden": False,
+                "postId": str(post_id),
+                "type": "post",
+                "action_type": "publish",
+                "cross_post_platforms": ["facebook"],
+                "follow_gate_enabled": False,
+                "creator": WISHLINK_CREATOR
+            }
+            try:
+                pub_resp = requests.post(
+                    "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
+                    headers=headers,
+                    json=pub_payload,
+                    timeout=20
+                )
+                pub_data = pub_resp.json()
+                logger.info(f"[SET-MSG] Activation/Publish response: {pub_data}")
+                if pub_data.get("success", False):
+                    logger.info(f"[SET-MSG] Successfully published/activated Post ID {post_id}")
+                    return True
+                else:
+                    logger.error(f"[SET-MSG] Activation/Publish failed: {pub_data}")
+                    return None
+            except Exception as e:
+                logger.error(f"[SET-MSG] Activation/Publish exception: {e}")
+                return None
         return None
     except Exception as e:
         logger.error(f"[SET-MSG] Failed to set custom message: {e}")
