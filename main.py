@@ -887,7 +887,8 @@ def create_ig_wishlink_post(
             logger.error(f"[IG-WL] Step 4 publish exception: {e}")
             return None
     else:
-        logger.info("[IG-WL] Step 4 skipped (0 products) — Will be published during custom message setup")
+        logger.info("[IG-WL] Step 4 skipped (0 products) — Waiting 20s for post to settle on Wishlink backend...")
+        time.sleep(20)  # ← NEW: post must be fully committed before set_custom_dm_message is called
 
     # ── Return result ───────────────────────────────────────
     wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
@@ -1087,7 +1088,8 @@ def create_fb_wishlink_post(
             logger.error(f"[FB-WL] Step 4 publish exception: {e}")
             return None
     else:
-        logger.info("[FB-WL] Step 4 skipped (0 products) — Will be published during custom message setup")
+        logger.info("[FB-WL] Step 4 skipped (0 products) — Waiting 20s for post to settle on Wishlink backend...")
+        time.sleep(20)  # ← NEW: post must be fully committed before set_custom_dm_message is called
 
     # ── Return result ────────────────────────────────────────
     wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
@@ -1131,12 +1133,26 @@ def set_custom_dm_message(post_id, custom_message):
         data = resp.json()
         logger.info(f"[SET-MSG] Custom message API response: {data}")
         if data.get("success", False) or resp.status_code == 200:
-            # Now publish / activate the post on Wishlink
-            logger.info(f"[SET-MSG] Custom message set successfully. Activating DM automation/publish for Post ID {post_id}...")
+            logger.info(f"[SET-MSG] Custom message set. Calling read-barrier GETs to force consistency...")
             
-            # Wait for database consistency propagation
-            logger.info("[SET-MSG] Waiting 8s for Wishlink database consistency...")
-            time.sleep(8)
+            # Read-barrier — same 2 GET calls browser makes before publish
+            try:
+                requests.get(
+                    f"https://api.wishlink.com/api/c/getShopProductsDetails",
+                    params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
+                    headers=headers, timeout=10
+                )
+                requests.get(
+                    f"https://api.wishlink.com/api/c/getShopPostOrCollectionDetails",
+                    params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
+                    headers=headers, timeout=10
+                )
+                logger.info("[SET-MSG] Read-barrier GETs done.")
+            except Exception as e:
+                logger.warning(f"[SET-MSG] Read-barrier GET failed (non-fatal): {e}")
+
+            logger.info("[SET-MSG] Waiting 5s before publish attempt...")
+            time.sleep(5)  # reduced from 8s since post already settled for 20s above
             
             # Defensive measure: Refresh headers with fresh token/session context
             pub_token = get_fresh_wishlink_token()
