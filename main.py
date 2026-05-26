@@ -887,8 +887,8 @@ def create_ig_wishlink_post(
             logger.error(f"[IG-WL] Step 4 publish exception: {e}")
             return None
     else:
-        logger.info("[IG-WL] Step 4 skipped (0 products) — Waiting 20s for post to settle on Wishlink backend...")
-        time.sleep(20)  # ← NEW: post must be fully committed before set_custom_dm_message is called
+        logger.info("[IG-WL] Step 4 skipped (0 products) — Waiting 60s for Wishlink to sync & download media to GCP CDN...")
+        time.sleep(60)  # Give Wishlink enough time to auto-sync new post and download media from Instagram CDN
 
     # ── Return result ───────────────────────────────────────
     wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
@@ -1088,8 +1088,8 @@ def create_fb_wishlink_post(
             logger.error(f"[FB-WL] Step 4 publish exception: {e}")
             return None
     else:
-        logger.info("[FB-WL] Step 4 skipped (0 products) — Waiting 20s for post to settle on Wishlink backend...")
-        time.sleep(20)  # ← NEW: post must be fully committed before set_custom_dm_message is called
+        logger.info("[FB-WL] Step 4 skipped (0 products) — Waiting 60s for Wishlink to sync & download media to GCP CDN...")
+        time.sleep(60)  # Give Wishlink enough time to auto-sync new post and download media from Instagram CDN
 
     # ── Return result ────────────────────────────────────────
     wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
@@ -1151,8 +1151,8 @@ def set_custom_dm_message(post_id, custom_message):
             except Exception as e:
                 logger.warning(f"[SET-MSG] Read-barrier GET failed (non-fatal): {e}")
 
-            logger.info("[SET-MSG] Waiting 5s before publish attempt...")
-            time.sleep(5)  # reduced from 8s since post already settled for 20s above
+            logger.info("[SET-MSG] Waiting 30s before publish attempt (giving Wishlink time to fully process media)...")
+            time.sleep(30)  # Allow Wishlink to finish GCP CDN media download before publish
             
             # Defensive measure: Refresh headers with fresh token/session context
             pub_token = get_fresh_wishlink_token()
@@ -1169,10 +1169,10 @@ def set_custom_dm_message(post_id, custom_message):
                 "creator": WISHLINK_CREATOR
             }
             
-            # Retry loop: up to 3 attempts with 5s wait
-            for attempt in range(3):
+            # Retry loop: up to 5 attempts with 15s wait
+            for attempt in range(5):
                 try:
-                    logger.info(f"[SET-MSG] Publish attempt {attempt + 1}/3...")
+                    logger.info(f"[SET-MSG] Publish attempt {attempt + 1}/5...")
                     pub_resp = requests.post(
                         "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
                         headers=pub_headers,
@@ -1189,11 +1189,11 @@ def set_custom_dm_message(post_id, custom_message):
                 except Exception as ex:
                     logger.error(f"[SET-MSG] Attempt {attempt + 1} exception: {ex}")
                 
-                if attempt < 2:
-                    logger.info("[SET-MSG] Retrying in 5 seconds...")
-                    time.sleep(5)
+                if attempt < 4:
+                    logger.info("[SET-MSG] Retrying in 15 seconds...")
+                    time.sleep(15)
                     
-            logger.error(f"[SET-MSG] All 3 attempts failed to publish Post ID {post_id}")
+            logger.error(f"[SET-MSG] All 5 attempts failed to publish Post ID {post_id}")
             return None
         return None
     except Exception as e:
