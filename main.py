@@ -1229,31 +1229,67 @@ def set_custom_dm_message(post_id, custom_message):
     logger.info("[SET-MSG] Waiting 5s for DB sync...")
     time.sleep(5)
 
-    # Step 3: Check post status and product count BEFORE attempting publish
+    # Step 3: Poll getInstaPostsList until Wishlink syncs this post
+    # (when post appears here, GCP CDN media is guaranteed ready)
+    ig_post_url = None
     try:
-        check_resp = requests.get(
+        # Get ig_post_url from getShopPostOrCollectionDetails
+        detail_resp = requests.get(
             "https://api.wishlink.com/api/c/getShopPostOrCollectionDetails",
             params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
             headers=headers,
             timeout=10
         )
-        if check_resp.status_code == 200:
-            post_info = check_resp.json().get("data", {}).get("post", {})
-            is_alive = post_info.get("is_alive", False)
-            products = post_info.get("products") or post_info.get("product_count") or []
-            has_products = bool(products)
-
-            if is_alive:
-                logger.info(f"[SET-MSG] ✅ Post already alive — skipping publish. Custom DM LIVE!")
+        if detail_resp.status_code == 200:
+            post_info = detail_resp.json().get("data", {}).get("post", {})
+            
+            # Already alive? Done!
+            if post_info.get("is_alive", False):
+                logger.info(f"[SET-MSG] ✅ Post already alive — Custom DM LIVE!")
                 return True
-
-            if not has_products:
-                logger.info(f"[SET-MSG] ✅ 0-product post — publish not needed. Custom DM active!")
-                return True
+            
+            ig_post_url = post_info.get("post_url") or post_info.get("link") or ""
     except Exception as e:
-        logger.warning(f"[SET-MSG] Pre-publish status check failed (non-fatal): {e}")
+        logger.warning(f"[SET-MSG] Detail fetch failed (non-fatal): {e}")
 
-    # Step 4: Publish / activate DM automation (3 retries, no GCP CDN polling)
+    # Step 4: Poll getInstaPostsList until this post appears (= GCP CDN ready)
+    if ig_post_url:
+        shortcode_match = re.search(r'instagram\.com/(?:p|reel|reels)/([A-Za-z0-9_-]+)', ig_post_url)
+        shortcode = shortcode_match.group(1) if shortcode_match else ""
+        
+        if shortcode:
+            logger.info(f"[SET-MSG] Polling getInstaPostsList for shortcode={shortcode}...")
+            synced = False
+            for attempt in range(10):  # max 10 attempts × 15s = 150s
+                try:
+                    list_resp = requests.get(
+                        "https://api.wishlink.com/api/c/getInstaPostsList",
+                        params={"nextPageCursor": "", "include_stories": "false", "creator": WISHLINK_CREATOR},
+                        headers=headers,
+                        timeout=15
+                    )
+                    if list_resp.status_code == 200:
+                        posts = list_resp.json().get("data", {}).get("posts", [])
+                        for p in posts:
+                            if shortcode in p.get("permalink", ""):
+                                logger.info(f"[SET-MSG] ✅ Post synced in Wishlink list on attempt {attempt+1}! GCP CDN ready.")
+                                synced = True
+                                break
+                    if synced:
+                        break
+                    logger.info(f"[SET-MSG] Post not yet in list (attempt {attempt+1}/10). Waiting 15s...")
+                except Exception as e:
+                    logger.warning(f"[SET-MSG] List poll error: {e}")
+                time.sleep(15)
+            
+            if not synced:
+                logger.warning("[SET-MSG] Post never appeared in list — trying publish anyway...")
+        else:
+            logger.warning("[SET-MSG] Could not extract shortcode — skipping list poll, trying publish...")
+    else:
+        logger.warning("[SET-MSG] Could not get ig_post_url — skipping list poll, trying publish...")
+
+    # Step 5: Publish (3 retries)
     pub_payload = {
         "is_alive": True,
         "is_hidden": False,
@@ -1264,10 +1300,9 @@ def set_custom_dm_message(post_id, custom_message):
         "follow_gate_enabled": False,
         "creator": WISHLINK_CREATOR
     }
-
     for attempt in range(3):
         try:
-            logger.info(f"[SET-MSG] Publish attempt {attempt + 1}/3...")
+            logger.info(f"[SET-MSG] Publish attempt {attempt+1}/3...")
             pub_resp = requests.post(
                 "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
                 headers=headers,
@@ -1280,13 +1315,13 @@ def set_custom_dm_message(post_id, custom_message):
             if pub_data.get("success", False):
                 logger.info(f"[SET-MSG] ✅ Custom DM LIVE for post_id={post_id}")
                 return True
-            logger.warning(f"[SET-MSG] Attempt {attempt + 1} returned success=False: {pub_data}")
+            logger.warning(f"[SET-MSG] Attempt {attempt+1} failed: {pub_data}")
         except Exception as e:
-            logger.error(f"[SET-MSG] Publish attempt {attempt + 1} exception: {e}")
+            logger.error(f"[SET-MSG] Publish attempt {attempt+1} exception: {e}")
         if attempt < 2:
             time.sleep(10)
 
-    logger.error(f"[SET-MSG] All 3 publish attempts failed for post_id={post_id}")
+    logger.error(f"[SET-MSG] All publish attempts failed for post_id={post_id}")
     return None
 
 
