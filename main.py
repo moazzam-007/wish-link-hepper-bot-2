@@ -1225,9 +1225,9 @@ def set_custom_dm_message(post_id, custom_message):
         logger.error(f"[SET-MSG] addShopProducts exception: {e}")
         return None
 
-    # Step 2: Short wait for DB sync
-    logger.info("[SET-MSG] Waiting 5s for DB sync...")
-    time.sleep(5)
+    # Step 2: Safe wait for GCP CDN sync before publish
+    logger.info("[SET-MSG] Waiting 60s for GCP CDN sync before publish...")
+    time.sleep(60)
 
     # Step 3: Publish and activate DM automation (updatePostOrCollectionStatus)
     logger.info(f"[SET-MSG] Activating DM automation status on Post ID {post_id}...")
