@@ -926,63 +926,66 @@ def create_ig_wishlink_post(
         logger.info("[IG-WL] Step 3 skipped — no task_url_pairs to finalize")
 
     # ── Step 4: updatePostOrCollectionStatus (Publish) ─────
-    gcp_ready = True
-    if ig_media_id:
-        logger.info("[IG-WL] Step 4: Polling Wishlink for GCP CDN media URL before publishing...")
-        gcp_ready = False
-        for attempt in range(10):
-            try:
-                r = requests.get(
-                    "https://api.wishlink.com/api/c/getShopPostOrCollectionDetails",
-                    params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
-                    headers=headers,
-                    timeout=15
-                )
-                if r.status_code == 200:
-                    info = r.json().get("data", {}).get("post", {})
-                    thumb = str(info.get("thumbnail_url", ""))
-                    media = str(info.get("media_urls", ""))
-                    has_thumb_gcp = "gcp-cdn.wishlink.com" in thumb
-                    has_media_gcp = "gcp-cdn.wishlink.com" in media
-                    if (has_thumb_gcp and has_media_gcp) or (has_thumb_gcp and not media) or (has_media_gcp and not thumb):
-                        logger.info(f"[IG-WL] GCP CDN ready on attempt {attempt+1}!")
-                        gcp_ready = True
-                        break
-                logger.info(f"[IG-WL] GCP CDN not ready yet (attempt {attempt+1}/10). Waiting 15s...")
-            except Exception as e:
-                logger.warning(f"[IG-WL] Error checking GCP CDN status (attempt {attempt+1}): {e}")
-            time.sleep(15)
+    if product_urls:
+        gcp_ready = True
+        if ig_media_id:
+            logger.info("[IG-WL] Step 4: Polling Wishlink for GCP CDN media URL before publishing...")
+            gcp_ready = False
+            for attempt in range(10):
+                try:
+                    r = requests.get(
+                        "https://api.wishlink.com/api/c/getShopPostOrCollectionDetails",
+                        params={"postType": "post", "postOrCollectionId": post_id, "creator": WISHLINK_CREATOR},
+                        headers=headers,
+                        timeout=15
+                    )
+                    if r.status_code == 200:
+                        info = r.json().get("data", {}).get("post", {})
+                        thumb = str(info.get("thumbnail_url", ""))
+                        media = str(info.get("media_urls", ""))
+                        has_thumb_gcp = "gcp-cdn.wishlink.com" in thumb
+                        has_media_gcp = "gcp-cdn.wishlink.com" in media
+                        if (has_thumb_gcp and has_media_gcp) or (has_thumb_gcp and not media) or (has_media_gcp and not thumb):
+                            logger.info(f"[IG-WL] GCP CDN ready on attempt {attempt+1}!")
+                            gcp_ready = True
+                            break
+                    logger.info(f"[IG-WL] GCP CDN not ready yet (attempt {attempt+1}/10). Waiting 15s...")
+                except Exception as e:
+                    logger.warning(f"[IG-WL] Error checking GCP CDN status (attempt {attempt+1}): {e}")
+                time.sleep(15)
 
-        if not gcp_ready:
-            logger.warning("[IG-WL] GCP CDN never appeared, proceeding to publish anyway but it might fail.")
-    else:
-        logger.info("[IG-WL] Step 4: ig_media_id is empty (standalone web link) — skipping GCP CDN polling and publishing instantly...")
+            if not gcp_ready:
+                logger.warning("[IG-WL] GCP CDN never appeared, proceeding to publish anyway but it might fail.")
+        else:
+            logger.info("[IG-WL] Step 4: ig_media_id is empty (standalone web link) — skipping GCP CDN polling and publishing instantly...")
 
-    try:
-        pub_payload = {
-            "is_alive": True,
-            "is_hidden": False,
-            "postId": str(post_id),
-            "type": "post",
-            "action_type": "publish",
-            "cross_post_platforms": None,
-            "follow_gate_enabled": False,
-            "creator": WISHLINK_CREATOR
-        }
-        pub_resp = requests.post(
-            "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
-            headers=headers,
-            json=pub_payload,
-            timeout=20
-        )
-        logger.info(f"[IG-WL] Step 4 publish: {pub_resp.status_code} | {pub_resp.text[:150]}")
-        pub_data = pub_resp.json()
-        if not pub_data.get("success", False):
-            logger.error(f"[IG-WL] Step 4 publish failed: {pub_data}")
+        try:
+            pub_payload = {
+                "is_alive": True,
+                "is_hidden": False,
+                "postId": str(post_id),
+                "type": "post",
+                "action_type": "publish",
+                "cross_post_platforms": None,
+                "follow_gate_enabled": False,
+                "creator": WISHLINK_CREATOR
+            }
+            pub_resp = requests.post(
+                "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
+                headers=headers,
+                json=pub_payload,
+                timeout=20
+            )
+            logger.info(f"[IG-WL] Step 4 publish: {pub_resp.status_code} | {pub_resp.text[:150]}")
+            pub_data = pub_resp.json()
+            if not pub_data.get("success", False):
+                logger.error(f"[IG-WL] Step 4 publish failed: {pub_data}")
+                return None
+        except Exception as e:
+            logger.error(f"[IG-WL] Step 4 publish exception: {e}")
             return None
-    except Exception as e:
-        logger.error(f"[IG-WL] Step 4 publish exception: {e}")
-        return None
+    else:
+        logger.info("[IG-WL] Step 4 skipped (0 products) — Post will be published in set_custom_dm_message after setting the custom message.")
 
     # ── Return result ───────────────────────────────────────
     wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
