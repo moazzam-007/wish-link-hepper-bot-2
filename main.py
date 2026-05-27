@@ -2397,6 +2397,12 @@ def set_custom_dm_message_api():
         post_id = str(post_id).strip()
         custom_message = str(custom_message).strip()
 
+        if len(custom_message) > 256:
+            return jsonify({
+                "success": False, 
+                "error": f"custom_message exceeds the Wishlink limit of 256 characters (current length: {len(custom_message)})."
+            }), 400
+
         logger.info(f"[SET-MSG] Route called for post_id={post_id}")
         result = set_custom_dm_message(post_id, custom_message)
 
