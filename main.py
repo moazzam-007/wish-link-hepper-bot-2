@@ -852,6 +852,7 @@ def create_ig_wishlink_post(
         )
         resp.raise_for_status()
         data = resp.json()
+        logger.info(f"[DEBUG-CREATE] createEditShopPost full response: {data}")
 
         post_id = data.get("post")
         if not post_id:
@@ -1244,6 +1245,7 @@ def set_custom_dm_message(post_id, custom_message):
         )
         if check_resp.status_code == 200:
             post_info = check_resp.json().get("data", {}).get("post", {})
+            logger.info(f"[DEBUG-LIVE] Full post_info: is_alive={post_info.get('is_alive')} | thumbnail={str(post_info.get('thumbnail_url',''))[:80]} | media={str(post_info.get('media_urls',''))[:80]} | status={post_info.get('status')} | is_hidden={post_info.get('is_hidden')}")
             is_alive = post_info.get("is_alive", False)
 
             if is_alive:
@@ -1265,6 +1267,7 @@ def set_custom_dm_message(post_id, custom_message):
             )
             if check_resp.status_code == 200:
                 post_info = check_resp.json().get("data", {}).get("post", {})
+                logger.info(f"[DEBUG-GCP] Attempt {attempt+1} | thumbnail={str(post_info.get('thumbnail_url',''))[:80]} | media={str(post_info.get('media_urls',''))[:80]}")
                 thumb = str(post_info.get("thumbnail_url", ""))
                 media = str(post_info.get("media_urls", ""))
                 
@@ -1296,6 +1299,8 @@ def set_custom_dm_message(post_id, custom_message):
         "creator": WISHLINK_CREATOR
     }
 
+    logger.info(f"[DEBUG-PUBLISH] Payload bhej raha hoon: {pub_payload}")
+
     try:
         resp = requests.post(
             "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
@@ -1305,6 +1310,7 @@ def set_custom_dm_message(post_id, custom_message):
         )
         resp.raise_for_status()
         data = resp.json()
+        logger.info(f"[DEBUG-PUBLISH] Full response: {resp.text}")
         logger.info(f"[SET-MSG] DM Automation activation response: {data}")
         if data.get("success", False):
             logger.info(f"[SET-MSG] ✅ Custom DM LIVE for post_id={post_id}")
