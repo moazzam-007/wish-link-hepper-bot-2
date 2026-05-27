@@ -1249,7 +1249,8 @@ def set_custom_dm_message(post_id, custom_message):
         logger.error(f"[SET-MSG] addShopProducts exception: {e}")
         return None
 
-
+    logger.info("[SET-MSG] Waiting 3 seconds for Wishlink DB to sync custom message...")
+    time.sleep(3)
 
     # Step 2: Check if post is already live
     logger.info(f"[SET-MSG] Checking if post {post_id} is already live...")
