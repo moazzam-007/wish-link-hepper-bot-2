@@ -977,31 +977,34 @@ def create_ig_wishlink_post(
     else:
         logger.info("[IG-WL] Step 4: ig_media_id is empty (standalone web link) — skipping GCP CDN polling and publishing instantly...")
 
-    try:
-        pub_payload = {
-            "is_alive": True,
-            "is_hidden": False,
-            "postId": str(post_id),
-            "type": "post",
-            "action_type": "publish",
-            "cross_post_platforms": None,
-            "follow_gate_enabled": False,
-            "creator": WISHLINK_CREATOR
-        }
-        pub_resp = requests.post(
-            "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
-            headers=headers,
-            json=pub_payload,
-            timeout=20
-        )
-        logger.info(f"[IG-WL] Step 4 publish: {pub_resp.status_code} | {pub_resp.text[:150]}")
-        pub_data = pub_resp.json()
-        if not pub_data.get("success", False):
-            logger.error(f"[IG-WL] Step 4 publish failed: {pub_data}")
+    if product_urls:
+        try:
+            pub_payload = {
+                "is_alive": True,
+                "is_hidden": False,
+                "postId": str(post_id),
+                "type": "post",
+                "action_type": "publish",
+                "cross_post_platforms": None,
+                "follow_gate_enabled": False,
+                "creator": WISHLINK_CREATOR
+            }
+            pub_resp = requests.post(
+                "https://api.wishlink.com/api/c/updatePostOrCollectionStatus",
+                headers=headers,
+                json=pub_payload,
+                timeout=20
+            )
+            logger.info(f"[IG-WL] Step 4 publish: {pub_resp.status_code} | {pub_resp.text[:150]}")
+            pub_data = pub_resp.json()
+            if not pub_data.get("success", False):
+                logger.error(f"[IG-WL] Step 4 publish failed: {pub_data}")
+                return None
+        except Exception as e:
+            logger.error(f"[IG-WL] Step 4 publish exception: {e}")
             return None
-    except Exception as e:
-        logger.error(f"[IG-WL] Step 4 publish exception: {e}")
-        return None
+    else:
+        logger.info("[IG-WL] Step 4 skipped (0 products) — Publish will be handled by set_custom_dm_message later.")
 
     # ── Return result ───────────────────────────────────────
     wishlink_post_url = f"https://wishlink.com/{WISHLINK_CREATOR_URL}/post/{post_id}"
